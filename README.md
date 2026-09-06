@@ -1,20 +1,26 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V2.7
+# dollar_watch — Dollar Crisis Early Warning Dashboard V2.8
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## V2.7 evidence-integrity / distribution-context release
+## V2.8 cleanup / freeze release
 
-V2.7 keeps the six-regime architecture frozen and fixes the remaining reliability gaps surfaced by the V2.6 red-team run.
+V2.8 keeps the six-regime model unchanged and fixes the remaining localized data-layer issues found in the V2.7 red-team run.
 
-### New in V2.7
+### New in V2.8
 
-- **Buyback capacity recovery.** Completed TreasuryDirect result XML `max_amount` now survives the schedule/results merge. Additional maximum-par aliases are recognized. If maximum capacity still cannot be determined, policy-response intensity is explicitly `UNKNOWN` and receives zero scoring confidence — never a false numeric zero.
-- **Semantic source relevance gate.** Official-source discovery now measures claim-token overlap plus topic-specific anchors. Candidates that fail are labeled `IRRELEVANT_SOURCE` and are rejected **before** Ollama claim verification. A reachable government URL is no longer enough to become an `INCONCLUSIVE` check.
-- **Verification review dashboard.** Persistent queue rows expose candidate relevance score/status, LLM verdict, source URL and human approval state. Checks can be approved, rejected or disputed; approval still does not silently promote them into hard scoring.
-- **Benchmark-auction lifecycle hardening.** Reopened coupon maturities such as 9Y11M are canonicalized back to the 10-Year benchmark, 29Y11M to 30-Year, etc. The upcoming-auction collector supplements Treasury FiscalData's convenience endpoint from the full auction table when benchmark tenors are missing. TIPS/FRNs remain distinct.
-- **Generalized FRED historical context.** Sufficiently populated FRED indicators now receive 1-year and 3-year percentile/z-score context rather than only SOFR99. This gives term premium, reserves, TGA, custody, breakevens, real yields and other series a common distributional frame.
-- **Longer FRED history window.** Default FRED collection begins in 2023 to improve percentile/z-score context while remaining lightweight.
-- **Human source-check state persists.** SQLite schema migrations preserve candidate relevance and approval decisions across upgrades.
+- **Buyback max-amount parser hardened.** TreasuryDirect aggregate fields are now recovered even when XML wraps values beneath semantic parent tags. Capacity remains `UNKNOWN` rather than zero whenever Treasury's maximum amount still cannot be established.
+- **Legacy verification mismatch quarantine.** Persisted LLM checks tied to a queue candidate that now fails the semantic relevance gate are automatically quarantined, excluded from red-team context, and shown separately for audit.
+- **Stronger topic relevance rules.** High-specificity buckets such as stablecoins, central-bank gold, BRICS and FX intervention require discriminating topic anchors; generic words such as `dollar` or `reserve` are insufficient.
+- **Indicative offshore FX-forward proxy.** The app optionally uses liquid EUR/JPY/CHF front currency futures versus spot, locally de-trended, to detect unusual forward/spot dislocations. It modestly improves offshore observation coverage when available but is explicitly **not cross-currency basis** and never substitutes for institutional basis data.
+- **Verification review hygiene.** Quarantined legacy checks cannot be approved or silently re-enter LLM evidence context.
+- **V2.8 regression tests** cover nested buyback XML amounts, unknown capacity behavior, source mismatch rejection/quarantine, and the offshore proxy labeling/coverage rules.
+
+## V2.7 foundations retained
+
+- Benchmark-auction lifecycle hardening and reopened-tenor canonicalization.
+- Generalized 1Y/3Y FRED percentile/z-score context.
+- Semantic primary-source relevance gate and persistent human approval states.
+- Buyback schedule/results completeness gates and `UNKNOWN` intensity semantics.
 
 ### V2.6 foundations retained
 
@@ -33,7 +39,7 @@ V2.7 keeps the six-regime architecture frozen and fixes the remaining reliabilit
 
 The interactive app automatically saves one `AUTO_STREAMLIT` record per unique live-data timestamp. Manual saves are `MANUAL`; the headless collector uses `SCHEDULED_COLLECTOR`. Legacy records are labeled rather than silently pretending they belong to the current schema.
 
-## V2.7 risk regimes
+## V2.8 risk regimes
 
 Each is an independent **0–100 risk index, not a probability**:
 
@@ -75,7 +81,7 @@ The dashboard also reports **Early Warning**, **Market Confirmation**, **Data Co
 
 The app is designed to fail sources independently rather than crash the whole dashboard.
 
-- Yahoo Finance via `yfinance`: DXY proxy, gold, Bitcoin, equities, Treasury/TIPS/commodity/CHF proxies and FX crosses.
+- Yahoo Finance via `yfinance`: DXY proxy, gold, Bitcoin, equities, Treasury/TIPS/commodity/CHF proxies, FX crosses, and front currency futures used only for the V2.8 offshore dislocation proxy.
 - FRED/H.4.1: Treasury yields, TIPS, breakevens, term premium, SOFR/IORB/TGCR, Fed assets/liabilities, reserve balances, TGA, swaps and foreign-custody series.
 - U.S. Treasury FiscalData: auction absorption and Monthly Treasury Statement fiscal flows.
 - U.S. Treasury TIC: major foreign Treasury holders.
@@ -136,7 +142,7 @@ Open `http://<docker-host>:8501`. SQLite data persist in `./data`.
 python collector.py
 ```
 
-The V2.7 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
+The V2.8 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
 
 ```text
 DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
@@ -167,14 +173,14 @@ python test_v26.py
 python test_v27.py
 ```
 
-The V2.7 regression suite additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
+The V2.8 regression suite additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
 
 ## Important limitations
 
 - Auction absorption is now restored from official FiscalData, but **true auction tails** still require a dependable live when-issued yield source; bid-to-cover/bidder mix are not the same as a tail.
 - FX option risk reversals, cross-currency basis and deep Treasury order-book data are still high-priority institutional-data additions.
 - `check_source_url()` validates reachability and source class only; it does **not** prove a claim is true. High-impact facts must still be verified against the source before they are marked VERIFIED.
-- TIC and COFER are lagged by design; V2.7 discounts that lag rather than pretending the data are current.
+- TIC and COFER are lagged by design; V2.8 discounts that lag rather than pretending the data are current.
 - Stress-test returns are explicit scenario assumptions, not forecasts.
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 

@@ -61,9 +61,17 @@ def _ensure_verification_checks(con) -> None:
             verdict TEXT NOT NULL,
             explanation TEXT,
             model TEXT,
-            provenance TEXT DEFAULT 'LLM-ASSISTED'
+            provenance TEXT DEFAULT 'LLM-ASSISTED',
+            relevance_score REAL,
+            relevance_status TEXT DEFAULT 'UNKNOWN',
+            quarantine_status TEXT DEFAULT 'ACTIVE',
+            quarantine_reason TEXT
         )
     """)
+    _ensure_column(con, "verification_checks", "relevance_score", "REAL")
+    _ensure_column(con, "verification_checks", "relevance_status", "TEXT DEFAULT 'UNKNOWN'")
+    _ensure_column(con, "verification_checks", "quarantine_status", "TEXT DEFAULT 'ACTIVE'")
+    _ensure_column(con, "verification_checks", "quarantine_reason", "TEXT")
 
 
 def connect():
@@ -218,22 +226,35 @@ def recent_events(limit: int = 100) -> list[dict]:
     return [dict(zip(keys,r)) for r in rows]
 
 
-def save_verification_check(claim: str, bucket: str, source_url: str, verdict: str, explanation: str = "", model: str = "") -> int:
+def save_verification_check(claim: str, bucket: str, source_url: str, verdict: str, explanation: str = "", model: str = "", relevance_score: float|None = None, relevance_status: str = "RELEVANT") -> int:
     con=connect(); _ensure_verification_checks(con)
     tier=classify_source(source_url).get("source_tier","UNSOURCED")
+    rel=str(relevance_status or "UNKNOWN").upper()
+    qstatus="ACTIVE" if rel=="RELEVANT" else "QUARANTINED"
+    qreason="" if qstatus=="ACTIVE" else "Source did not pass semantic relevance gate"
     cur=con.execute(
-        "INSERT INTO verification_checks(created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance) VALUES (?,?,?,?,?,?,?,?,?)",
-        (datetime.now(timezone.utc).isoformat(),claim,bucket,source_url,tier,verdict,explanation,model,"LLM-ASSISTED"),
+        "INSERT INTO verification_checks(created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance,relevance_score,relevance_status,quarantine_status,quarantine_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),claim,bucket,source_url,tier,verdict,explanation,model,"LLM-ASSISTED",relevance_score,rel,qstatus,qreason),
     )
     con.commit(); rid=int(cur.lastrowid); con.close(); return rid
 
 
-def recent_verification_checks(limit: int = 100) -> list[dict]:
-    con=connect(); _ensure_verification_checks(con)
+def recent_verification_checks(limit: int = 100, include_quarantined: bool = False) -> list[dict]:
+    con=connect(); _ensure_verification_checks(con); _ensure_verification_queue(con); _sync_verification_quarantine(con); con.commit()
+    where="" if include_quarantined else "WHERE COALESCE(quarantine_status,'ACTIVE') <> 'QUARANTINED'"
     rows=con.execute(
-        "SELECT id,created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance FROM verification_checks ORDER BY id DESC LIMIT ?",(limit,)
+        f"SELECT id,created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance,relevance_score,relevance_status,quarantine_status,quarantine_reason FROM verification_checks {where} ORDER BY id DESC LIMIT ?",(limit,)
     ).fetchall(); con.close()
-    keys=["id","created_at","claim","bucket","source_url","source_tier","verdict","explanation","model","provenance"]
+    keys=["id","created_at","claim","bucket","source_url","source_tier","verdict","explanation","model","provenance","relevance_score","relevance_status","quarantine_status","quarantine_reason"]
+    return [dict(zip(keys,r)) for r in rows]
+
+
+def recent_quarantined_verification_checks(limit: int = 100) -> list[dict]:
+    con=connect(); _ensure_verification_checks(con); _ensure_verification_queue(con); _sync_verification_quarantine(con); con.commit()
+    rows=con.execute(
+        "SELECT id,created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance,relevance_score,relevance_status,quarantine_status,quarantine_reason FROM verification_checks WHERE COALESCE(quarantine_status,'ACTIVE')='QUARANTINED' ORDER BY id DESC LIMIT ?",(limit,)
+    ).fetchall(); con.close()
+    keys=["id","created_at","claim","bucket","source_url","source_tier","verdict","explanation","model","provenance","relevance_score","relevance_status","quarantine_status","quarantine_reason"]
     return [dict(zip(keys,r)) for r in rows]
 
 
@@ -292,6 +313,32 @@ def _ensure_verification_queue(con) -> None:
         con.execute("ALTER TABLE verification_queue ADD COLUMN candidate_relevance REAL")
     if "relevance_status" not in cols:
         con.execute("ALTER TABLE verification_queue ADD COLUMN relevance_status TEXT")
+
+def _sync_verification_quarantine(con) -> int:
+    """Quarantine legacy checks whose queue candidate now fails V2.8 relevance rules.
+
+    This is intentionally conservative: only checks that can be matched back to a queue row
+    by claim + candidate/source URL are automatically quarantined.  Unmatched historical checks
+    remain visible but are not promoted to verified analyst evidence automatically.
+    """
+    _ensure_verification_checks(con); _ensure_verification_queue(con)
+    cur=con.execute("""
+        UPDATE verification_checks
+           SET quarantine_status='QUARANTINED',
+               quarantine_reason='Source candidate failed semantic relevance gate in verification queue',
+               relevance_status=COALESCE(NULLIF(relevance_status,''),'IRRELEVANT_SOURCE')
+         WHERE id IN (
+            SELECT vc.id
+              FROM verification_checks vc
+              JOIN verification_queue vq
+                ON lower(trim(vc.claim))=lower(trim(vq.claim))
+               AND lower(trim(vc.source_url))=lower(trim(COALESCE(vq.candidate_url,'')))
+             WHERE COALESCE(vq.relevance_status,'') <> 'RELEVANT'
+                OR COALESCE(vq.status,'')='IRRELEVANT_SOURCE'
+         )
+    """)
+    return int(cur.rowcount or 0)
+
 
 def upsert_verification_queue(rows: list[dict]) -> int:
     import hashlib

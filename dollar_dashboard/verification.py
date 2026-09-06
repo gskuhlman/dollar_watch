@@ -9,7 +9,7 @@ import requests
 
 from .evidence import classify_source, fetch_source_text
 
-UA={"User-Agent":"dollar_watch/2.7 (+local research dashboard)"}
+UA={"User-Agent":"dollar_watch/2.8 (+local research dashboard)"}
 
 # Deterministic primary-source destinations. These do not assert that a claim is true;
 # they put the analyst at the authoritative evidence surface first.
@@ -72,6 +72,15 @@ BUCKET_ANCHORS={
     'Stablecoins': {'stablecoin','stablecoins','payment stablecoin','digital asset','digital dollar','genius act','usdc','usdt','usd1'},
 }
 MIN_RELEVANCE_SCORE=35.0
+# High-specificity buckets require at least one discriminating topic token.  Generic
+# words such as "dollar" or "reserve" are not sufficient; this prevents a sanctions
+# press release that merely mentions dollar access from verifying a stablecoin claim.
+HARD_BUCKET_ANCHORS={
+    'Stablecoins': {'stablecoin','stablecoins','usdc','usdt','usd1','genius'},
+    'Central-bank gold': {'gold','bullion','repatriation'},
+    'BRICS / de-dollarization': {'brics','dedollar','de-dollar'},
+    'FX intervention': {'intervention','esf','fx'},
+}
 
 def _anchor_tokens(bucket:str)->set[str]:
     out=set()
@@ -96,7 +105,14 @@ def source_relevance(bucket:str,claim:str,text:str,anchor:str='',url:str='')->di
         relevant=((len(overlap)>=2 and ratio>=0.25) or (len(overlap)>=1 and ratio>=0.15 and len(bucket_hits)>=1))
         if bucket_tokens and not bucket_hits:
             relevant=False
+        hard=HARD_BUCKET_ANCHORS.get(bucket,set())
+        if hard and not (hard & content_tokens):
+            relevant=False
         relevant=bool(relevant and score>=MIN_RELEVANCE_SCORE)
+    if len(claim_tokens)<=3:
+        hard=HARD_BUCKET_ANCHORS.get(bucket,set())
+        if hard and not (hard & content_tokens):
+            relevant=False
     return {
         'relevance_score':round(score,1),
         'relevance_status':'RELEVANT' if relevant else 'IRRELEVANT_SOURCE',

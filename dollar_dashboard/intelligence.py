@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.7 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.8 (+local research dashboard)"}
 
 CFTC_DATASET = "gpe5-46if"  # Traders in Financial Futures - futures only
 CFTC_ENDPOINTS = [

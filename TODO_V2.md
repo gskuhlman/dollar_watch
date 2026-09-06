@@ -255,3 +255,22 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] Add dependable cross-currency-basis / FX-swap data only when a trustworthy accessible source is identified.
 - [ ] Calibrate trigger thresholds against historical and newly accumulated event data.
 - [ ] Replace static scenario sensitivities with empirical event/regime betas once enough observations exist.
+
+
+## V2.8 completed
+
+- [x] Harden TreasuryDirect buyback maximum-capacity parsing for nested XML shapes.
+- [x] Keep buyback intensity `UNKNOWN` whenever capacity remains unavailable.
+- [x] Quarantine legacy persisted source checks that fail current semantic relevance rules.
+- [x] Add high-specificity hard topic anchors for stablecoin/gold/BRICS/FX-intervention verification.
+- [x] Add a free EUR/JPY/CHF front-futures-vs-spot dislocation proxy without mislabeling it cross-currency basis.
+- [x] Raise offshore funding observation coverage only modestly when proxy pairs are available.
+- [x] Surface quarantined source checks separately in the verification UI.
+- [x] Add V2.8 regression tests.
+
+## Freeze / observe after V2.8
+
+- [ ] Accumulate real run history across Treasury auctions, CFTC releases, TIC/COFER updates and Fed events before changing the six-regime architecture.
+- [ ] Add true cross-currency-basis / FX-swap data only if a dependable accessible source becomes available.
+- [ ] Calibrate thresholds and portfolio reactions against historical and newly observed event outcomes.
+- [ ] Replace static scenario sensitivities with empirical regime/event betas after enough observations accumulate.

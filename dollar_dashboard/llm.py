@@ -104,7 +104,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.7.
+    system = """You are the red-team macro analyst for dollar_watch V2.8.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -132,7 +132,7 @@ Evidence rules are strict:
 - Tokenized Treasury/RWA products (for example accumulating-NAV structures) are not automatically $1-pegged stablecoins. Use the supplied asset classification.
 - A FAILED source means missing evidence, not a benign zero reading.
 - Median SOFR-IORB and SOFR99-IORB are different signals. Never describe SOFR99-IORB as distance to the median SOFR trigger. Use repo_tail_signal for upper-tail stress and repo_or_swap_stress for median/facility stress.
-- Domestic repo/Fed-facility coverage is not full global-dollar-funding coverage. Explicitly mention the offshore cross-currency-basis/FX-swap gap when Dollar Funding Squeeze coverage is discussed.
+- Domestic repo/Fed-facility coverage is not full global-dollar-funding coverage. V2.8 may supply a front-futures/spot dislocation proxy; this is NOT cross-currency basis. Explicitly mention the remaining cross-currency-basis/FX-swap gap when Dollar Funding Squeeze coverage is discussed.
 
 Prioritize causal mechanisms, fiscal flows, policy actors, foreign actors, Treasury/repo plumbing,
 positioning, structural dollar supports, and disconfirming evidence. Distinguish duration/supply stress

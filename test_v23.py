@@ -27,7 +27,7 @@ def test_run_deduplication():
         b,new2=save_snapshot_if_new(payload,payload['timestamp'])
         assert new1 is True and new2 is False and a==b
         rows=recent_snapshots(10)
-        assert len(rows)==1 and rows[0]['_app_version']=='2.7.0'
+        assert len(rows)==1 and rows[0]['_app_version']=='2.8.0'
 
 
 def test_regime_coverage_separate_from_risk():

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import uuid
 
-APP_VERSION='2.7.0'
-SCHEMA_VERSION='2.7'
+APP_VERSION='2.8.0'
+SCHEMA_VERSION='2.8'
 
 
 def classify_snapshot_change(previous:dict|None,current:dict,current_scores:dict)->dict:

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.7 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.8 (+local research dashboard)"}
 BUYBACK_PAGE = "https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/"
 SCHEDULE_XML_URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
 RESULT_DIR = "https://www.treasurydirect.gov/instit/annceresult/press/preanre/{year}/"
@@ -38,6 +38,52 @@ def _first(rec: dict, aliases: list[str], default=None):
             return nr[k]
     return default
 
+
+
+
+def _element_text(el: ET.Element) -> str:
+    """Return the first useful scalar text under an XML element.
+
+    Treasury buyback XML has changed shape over time. Some releases expose aggregate
+    values as direct leaf text, while others wrap the scalar in a child node.  Flattening
+    only leaf tags can therefore lose the semantic parent name (for example a generic
+    ``<value>`` child under ``<maxParAmountToBeRedeemed>``).
+    """
+    direct=(el.text or "").strip()
+    if direct:
+        return direct
+    for child in el.iter():
+        if child is el:
+            continue
+        txt=(child.text or "").strip()
+        if txt:
+            return txt
+    return ""
+
+
+def _semantic_value(root: ET.Element, aliases: list[str], required_terms: tuple[str, ...] = ()):
+    alias_norm={_norm(x) for x in aliases}
+    for el in root.iter():
+        tag=_norm(el.tag)
+        alias_match=tag in alias_norm
+        term_match=bool(required_terms) and all(term in tag for term in required_terms)
+        if alias_match or term_match:
+            txt=_element_text(el)
+            if txt:
+                return txt
+    return None
+
+
+def _semantic_money(root: ET.Element, aliases: list[str], required_terms: tuple[str, ...] = ()):
+    return _money(_semantic_value(root, aliases, required_terms))
+
+
+def _coalesced_money(rec: dict, root: ET.Element, aliases: list[str], required_terms: tuple[str, ...] = ()):
+    v=_money(_first(rec, aliases))
+    if v is not None and not pd.isna(v):
+        return v
+    v=_semantic_money(root, aliases, required_terms)
+    return None if v is None or pd.isna(v) else v
 
 def _leaf_record(el: ET.Element) -> dict:
     rec = {}
@@ -206,9 +252,9 @@ def _normalize_result_xml(content: bytes, source_url: str) -> dict:
         "operation_type": _first(rec, ["operationType", "buybackType"], ""),
         "security_type": _first(rec, ["securityType"], ""),
         "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
-        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmountToBeRedeemed", "maximumParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"])),
-        "total_offered": _money(_first(rec, ["totalParAmountOffered", "totalAmountOffered"])),
-        "total_accepted": _money(_first(rec, ["totalParAmountAccepted", "totalAmountAccepted"])),
+        "max_amount": _coalesced_money(rec, root, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmountToBeRedeemed", "maximumParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"], ("par","redeem")),
+        "total_offered": _coalesced_money(rec, root, ["totalParAmountOffered", "totalAmountOffered"], ("total","offered")),
+        "total_accepted": _coalesced_money(rec, root, ["totalParAmountAccepted", "totalAmountAccepted"], ("total","accepted")),
         "issues_eligible": pd.to_numeric(_first(rec, ["noIssueEligible", "numberIssuesEligible", "numberOfIssuesEligible"]), errors="coerce"),
         "issues_accepted": pd.to_numeric(_first(rec, ["noIssuesAccepted", "numberIssuesAccepted", "numberOfIssuesAccepted"]), errors="coerce"),
         "operation_status": _first(rec, ["operationStatus"], "Results"),
@@ -282,7 +328,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
 
 
 def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
-    """V2.7 buyback collector.
+    """V2.8 buyback collector.
 
     The official tentative schedule and completed TreasuryDirect result XMLs are separate evidence
     surfaces. A result-XML failure does not erase a successfully retrieved schedule, and a schedule
@@ -309,7 +355,7 @@ def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
             rsmall = results[[c for c in rcols if c in results.columns]].drop_duplicates("operation_date", keep="last")
             merged = merged.merge(rsmall, on="operation_date", how="outer", suffixes=("", "_result"))
             # Completed result XMLs are authoritative for execution fields.  Coalesce result
-            # maximum capacity and classification fields into the tentative-schedule row; V2.7
+            # maximum capacity and classification fields into the tentative-schedule row; V2.8
             # prevents dropped result max_amount here, creating a false zero-capacity signal.
             for col in ["operation_start", "operation_type", "security_type", "maturity_bucket", "max_amount"]:
                 rc=f"{col}_result"

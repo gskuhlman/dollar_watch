@@ -14,7 +14,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.7 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.8 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -33,6 +33,16 @@ MARKET_TICKERS = {
     "USDJPY": "JPY=X",
     "USDCHF": "CHF=X",
     "USDCNY": "CNY=X",
+}
+
+
+# Free, liquid front-futures proxies used only to detect unusual FX forward/spot
+# dislocations. They are NOT cross-currency-basis quotes and never substitute for
+# institutional basis data.
+OFFSHORE_FX_PROXY_TICKERS = {
+    "EUR Front Future": "6E=F",
+    "JPY Front Future": "6J=F",
+    "CHF Front Future": "6S=F",
 }
 
 FRED_SERIES = {
@@ -97,7 +107,7 @@ def _returns(s: pd.Series) -> dict:
 def fetch_market_history(period: str = "2y") -> tuple[pd.DataFrame, pd.DataFrame]:
     if yf is None:
         raise ImportError("yfinance is required for the market-price collector; install requirements.txt")
-    tickers = list(MARKET_TICKERS.values())
+    tickers = list(MARKET_TICKERS.values()) + list(OFFSHORE_FX_PROXY_TICKERS.values())
     raw = yf.download(
         tickers=tickers,
         period=period,
@@ -115,10 +125,79 @@ def fetch_market_history(period: str = "2y") -> tuple[pd.DataFrame, pd.DataFrame
     else:
         close = raw[["Close"]].copy()
         close.columns = [tickers[0]]
-    inverse = {v: k for k, v in MARKET_TICKERS.items()}
+    inverse = {v: k for k, v in {**MARKET_TICKERS, **OFFSHORE_FX_PROXY_TICKERS}.items()}
     close = close.rename(columns=inverse)
-    summary = pd.DataFrame({name: _returns(close[name]) for name in close.columns}).T
+    visible = [name for name in MARKET_TICKERS if name in close.columns]
+    summary = pd.DataFrame({name: _returns(close[name]) for name in visible}).T
     return close, summary
+
+
+def summarize_offshore_fx_forward_proxy(close: pd.DataFrame) -> dict:
+    """Indicative free proxy for offshore FX-forward dislocation.
+
+    Uses front CME currency futures versus matching spot quotes, then removes the
+    rolling local median so ordinary interest-rate carry / contract roll does not
+    masquerade as stress.  This is deliberately NOT called cross-currency basis.
+    It can flag unusual forward/spot dislocations while true basis remains absent.
+    """
+    if close is None or close.empty:
+        return {"available": False, "coverage": 30.0, "proxy_kind": "FRONT_FUTURES_SPOT_DISLOCATION", "actual_cross_currency_basis_available": False, "pairs": []}
+    specs=[
+        ("EUR", "EURUSD", "EUR Front Future", False),
+        ("JPY", "USDJPY", "JPY Front Future", True),
+        ("CHF", "USDCHF", "CHF Front Future", True),
+    ]
+    rows=[]
+    for ccy,spot_col,fut_col,invert in specs:
+        if spot_col not in close.columns or fut_col not in close.columns:
+            continue
+        df=pd.concat([close[spot_col],close[fut_col]],axis=1).dropna()
+        if len(df)<40:
+            continue
+        spot=pd.to_numeric(df[spot_col],errors="coerce")
+        fut=pd.to_numeric(df[fut_col],errors="coerce")
+        spot_q=(1.0/spot) if invert else spot
+        # Some vendor feeds may express JPY in cents/100 units. Normalize only when
+        # the scale is obviously inconsistent with matching spot.
+        ratio=(fut/spot_q).dropna()
+        if not ratio.empty:
+            med=float(ratio.median())
+            if 50 < med < 150:
+                fut=fut/100.0
+            elif 0.005 < med < 0.02:
+                fut=fut*100.0
+        raw=np.log((fut/spot_q).replace([np.inf,-np.inf],np.nan)).dropna()
+        if len(raw)<40:
+            continue
+        baseline=raw.rolling(63,min_periods=20).median()
+        dev=(raw-baseline).dropna()
+        if len(dev)<20:
+            continue
+        one=dev.tail(min(252,len(dev)))
+        last=float(dev.iloc[-1]); sd=float(one.std(ddof=0)) if len(one)>1 else 0.0
+        z=(last-float(one.mean()))/sd if sd>0 else 0.0
+        abs_pct=(50.0 if float(one.abs().std(ddof=0)) < 1e-12 else float((one.abs()<=abs(last)).mean()*100.0))
+        rows.append({
+            "currency":ccy,
+            "dislocation_bps":round(last*10000.0,2),
+            "zscore_1y":round(float(z),2),
+            "absolute_percentile_1y":round(abs_pct,1),
+            "observations_1y":int(len(one)),
+            "as_of":str(dev.index[-1].date()) if hasattr(dev.index[-1],"date") else str(dev.index[-1]),
+        })
+    n=len(rows)
+    coverage={0:30.0,1:38.0,2:46.0,3:55.0}.get(n,55.0)
+    stress=(sum(min(3.0,abs(float(r["zscore_1y"]))) for r in rows)/max(1,n))/3.0*100.0 if rows else None
+    return {
+        "available": bool(rows),
+        "coverage": coverage,
+        "proxy_kind": "FRONT_FUTURES_SPOT_DISLOCATION",
+        "actual_cross_currency_basis_available": False,
+        "proxy_stress": None if stress is None else round(stress,1),
+        "pairs": rows,
+        "reason": "Free CME/Yahoo front-futures vs spot dislocation proxy; true EUR/USD, JPY/USD and CHF/USD cross-currency basis remains unavailable.",
+        "limitations": "Front-contract tenor changes and interest-rate carry are only locally de-trended; use for anomaly detection, not covered-interest-parity measurement.",
+    }
 
 
 def fetch_fred_series(series_id: str, start: str | None = None) -> pd.Series:
@@ -198,7 +277,7 @@ def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataF
             "1y_change": delta_days(365),
         }
 
-    # V2.7 distributional context for every sufficiently populated FRED series.
+    # V2.8 distributional context for every sufficiently populated FRED series.
     # This replaces many hand-waved "unusual" labels with the series' own recent history.
     # Percentiles are descriptive, not automatically directional risk signals.
     for label in hist.columns:
@@ -218,7 +297,7 @@ def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataF
             rows[label][f"zscore_{suffix}"]=((last-mean)/std) if std>0 else 0.0
             rows[label][f"history_obs_{suffix}"]=int(len(window))
 
-    # V2.7 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
+    # V2.8 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
     # thing as the median SOFR-IORB spread. Track its own historical extremeness and
     # persistence so the dashboard cannot describe a tail move as being "1bp from"
     # the median funding-stress trigger.
@@ -247,7 +326,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.7 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.8 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -400,7 +479,7 @@ def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd
     """Fetch upcoming Treasury auctions with a same-source fallback for missing benchmark tenors.
 
     FiscalData's dedicated upcoming table can lag or label reopenings by remaining maturity.
-    V2.7 canonicalizes terms and supplements it from the full auction table's future placeholders,
+    V2.8 canonicalizes terms and supplements it from the full auction table's future placeholders,
     without ever feeding those placeholders into historical auction stress.
     """
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()

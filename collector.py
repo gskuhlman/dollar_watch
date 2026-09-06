@@ -1,4 +1,4 @@
-"""Headless V2.7 collector for cron / Windows Task Scheduler.
+"""Headless V2.8 collector for cron / Windows Task Scheduler.
 
 Fetches all public feeds, scores the six risk regimes, calculates the guarded portfolio,
 saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
@@ -53,7 +53,7 @@ def main():
     }
     rid = save_snapshot(payload, run_kind="SCHEDULED_COLLECTOR")
     save_alerts(alerts)
-    print(f"Saved V2.7 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Saved V2.8 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
         old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)

@@ -7,7 +7,7 @@ import pandas as pd
 
 from .data import (
     fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions, fetch_upcoming_treasury_auctions,
-    summarize_auction_stress, summarize_upcoming_auctions,
+    summarize_auction_stress, summarize_upcoming_auctions, summarize_offshore_fx_forward_proxy,
 )
 from .intelligence import (
     fetch_cftc_tff, summarize_cftc_fx, summarize_fx_positioning_squeeze,
@@ -52,10 +52,13 @@ def collect_live_bundle() -> dict[str, Any]:
     try:
         market_hist, market_summary = fetch_market_history()
         bundle["market_hist"] = market_hist; bundle["market_summary"] = market_summary
+        bundle["offshore_fx_proxy"] = summarize_offshore_fx_forward_proxy(market_hist)
         status["Market prices"] = {"ok": not market_summary.empty, "weight": 1.3, "last_date": _last_index(market_hist), "notes": "Yahoo Finance / exchange proxies"}
+        status["Offshore FX forward proxy"] = {"ok": bool(bundle["offshore_fx_proxy"].get("available")), "weight": 0.35, "last_date": _last_index(market_hist), "confidence_cap": 55.0, "notes": "Front currency futures vs spot anomaly proxy only; not true cross-currency basis"}
     except Exception as e:
-        bundle["market_hist"] = pd.DataFrame(); bundle["market_summary"] = pd.DataFrame()
+        bundle["market_hist"] = pd.DataFrame(); bundle["market_summary"] = pd.DataFrame(); bundle["offshore_fx_proxy"] = {"available":False,"coverage":30.0,"actual_cross_currency_basis_available":False,"pairs":[],"reason":"Market proxy unavailable"}
         status["Market prices"] = {"ok": False, "weight": 1.3, "error": str(e)}
+        status["Offshore FX forward proxy"] = {"ok": False, "weight": 0.35, "error": str(e)}
 
     try:
         fred_hist, fred_summary = fetch_fred_bundle()
@@ -217,15 +220,15 @@ def collect_live_bundle() -> dict[str, Any]:
         "news": source_confidence.get("News discovery", 0.0),
     }
 
-    # Cross-currency basis / OTC FX-swap stress is not available from a dependable free
-    # real-time feed in V2.7.  Keep the missing offshore layer explicit so domestic repo
-    # coverage can never be mislabeled as 100% observation of global dollar funding.
+    # V2.8: a free front-futures/spot anomaly proxy adds modest visibility, but it is
+    # explicitly NOT cross-currency basis.  True institutional basis remains a gap.
+    offshore_proxy=bundle.get("offshore_fx_proxy",{}) or {}
     offshore_funding_meta = {
-        "available": False,
-        "coverage": 30.0,
-        "reason": "No dependable free real-time EUR/USD, JPY/USD and CHF/USD cross-currency-basis feed configured.",
+        **offshore_proxy,
+        "coverage": float(offshore_proxy.get("coverage",30.0) or 30.0),
         "desired_metrics": ["EURUSD cross-currency basis","JPYUSD cross-currency basis","CHFUSD cross-currency basis","OTC FX-swap dollar premium"],
     }
+
 
     snapshot = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
