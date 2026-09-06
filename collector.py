@@ -1,4 +1,4 @@
-"""Headless V2.5 collector for cron / Windows Task Scheduler.
+"""Headless V2.6 collector for cron / Windows Task Scheduler.
 
 Fetches all public feeds, scores the six risk regimes, calculates the guarded portfolio,
 saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
@@ -28,6 +28,7 @@ def main():
     news_class = classify_news(bundle.get("news"))
     overrides = get_overrides(DEFAULT_OVERRIDES)
     scores = score(snap, news_class, overrides)
+    triggers = evaluate_triggers(snap, scores)
     portfolio_value = float(get_setting("portfolio_value", DEFAULT_SETTINGS["portfolio_value"]))
     baseline = get_setting("baseline_allocation", DEFAULT_SETTINGS["baseline_allocation"])
     min_trade = float(DEFAULT_SETTINGS.get("allocation_change_threshold_pct", 3.0))
@@ -37,9 +38,8 @@ def main():
         max_turnover_pct=float(DEFAULT_SETTINGS.get("max_turnover_pct", 25.0)),
         min_position_pct=float(DEFAULT_SETTINGS.get("min_position_pct", 2.0)),
         min_trade_dollars=float(DEFAULT_SETTINGS.get("min_trade_dollars", 1000.0)),
-        score_details=scores,
+        score_details=scores, machine_triggers=triggers,
     )
-    triggers = evaluate_triggers(snap, scores)
     alerts = generate_alerts(scores, portfolio, prior, float(DEFAULT_SETTINGS.get("alert_threshold_points", 8)), triggers=triggers)
     payload = {
         **snap,
@@ -53,7 +53,7 @@ def main():
     }
     rid = save_snapshot(payload, run_kind="SCHEDULED_COLLECTOR")
     save_alerts(alerts)
-    print(f"Saved V2.5 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Saved V2.6 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
         old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)

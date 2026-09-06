@@ -1,21 +1,20 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V2.5
+# dollar_watch — Dollar Crisis Early Warning Dashboard V2.6
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## V2.5 funding / verification reliability release
+## V2.6 transaction / verification / event-mechanics release
 
-V2.5 focuses on the remaining blind spots exposed by the V2.4 red-team run: completed Treasury buyback results, repo-tail interpretation, offshore-dollar funding visibility, and verified policy evidence.
+V2.6 closes the remaining correctness gaps identified by the V2.5 red-team run and is intended to be the last large feature release before accumulating live history.
 
-### New in V2.5
+### New in V2.6
 
-- **TreasuryDirect completed buyback results discovery.** The collector derives official `BBR_YYYYMMDDHHMMSS.xml` result URLs from operation dates/start times and uses a bounded recent-date fallback when schedule links are incomplete. It records result URLs attempted, not-found results, completed operations, total par offered and total par accepted.
-- **Buyback schedule and buyback results have separate health.** An available schedule no longer makes completed-operation visibility look healthy. Missing results are explicitly missing evidence, never a benign zero.
-- **Repo median and repo tail are separate signals.** `SOFR-IORB` remains the median funding-stress trigger. `SOFR99-IORB` now has its own percentile/z-score/persistence WATCH/CONFIRM logic and cannot be described as “one basis point from” the median trigger.
-- **Offshore-dollar funding coverage is explicit.** Domestic repo/funding coverage is shown separately from offshore FX-swap/cross-currency-basis coverage. Until dependable EUR/USD, JPY/USD and CHF/USD basis data are configured, global funding-squeeze evidence coverage is deliberately below 100%.
-- **Unknown-is-not-absent language gate.** If a regime's critical-source coverage is below 50%, the red-team prompt must use wording such as “no verified evidence is currently ingested,” “unknown,” or “insufficient evidence” rather than claiming the factor is absent or disproven.
-- **Primary-source verification assistant.** The verification queue can search the appropriate official-source family, rank same-domain candidate pages by claim relevance, fetch the strongest candidates, and ask the configured Ollama/OpenAI-compatible LLM whether each claim is SUPPORTED, CONTRADICTED or INCONCLUSIVE. Checks remain non-scoring until explicitly promoted to VERIFIED evidence.
-- **Persistent verification checks.** Primary-source checks are stored in SQLite with claim, bucket, URL, source tier, verdict, explanation, model and provenance so the same claim does not start from scratch every run.
-- **Verification adapters expanded.** Official-source families now cover Treasury/ESF, Fed/NY Fed, Japan MOF/BOJ, PBOC/SAFE, RBI/BRICS, central-bank gold sources, stablecoin/digital-dollar policy and related primary surfaces.
+- **Buyback completeness gating.** Missing TreasuryDirect result files cannot be interpreted as zero activity. Result completeness and max-amount parse quality cap confidence and block execution conclusions when incomplete.
+- **Auction replacement linkage.** Expired 10Y/30Y evidence explicitly links to the next announced same-tenor auction and remains non-trading until fresh results arrive.
+- **FIMA is separate from swap lines.** H.4.1 foreign-official FIMA repo is monitored independently from central-bank USD liquidity swaps; both can trigger official-dollar-liquidity stress, but the app no longer calls swaps “FIMA swaps.”
+- **Valuation-aware TIC transaction engine.** Treasury holdings changes are separated from active net transactions, long-term valuation changes and residual/custody effects. Holdings are no longer casually called demand.
+- **Persistent automatic verification queue.** Complete headline claims are automatically deduplicated into SQLite. With the local Ollama/OpenAI-compatible LLM enabled, a bounded number of new P0/P1 claims can be automatically researched against primary-source candidates and persisted as SUPPORTED / CONTRADICTED / INCONCLUSIVE. Human promotion to VERIFIED remains mandatory before hard scoring.
+- **Mechanism-aware weak-auction portfolio actions.** Weak long-end auctions plus rising breakevens can add TIPS; weak auctions with anchored inflation and rising real yields instead preserve/add T-bill liquidity and avoid mechanically adding TIPS duration.
+- **Separate TIC transaction freshness.** Monthly transaction/valuation evidence is confidence-discounted by its actual observation date rather than the fact that FRED was reachable today.
 
 ### V2.4 foundations retained
 
@@ -27,7 +26,7 @@ V2.5 focuses on the remaining blind spots exposed by the V2.4 red-team run: comp
 
 The interactive app automatically saves one `AUTO_STREAMLIT` record per unique live-data timestamp. Manual saves are `MANUAL`; the headless collector uses `SCHEDULED_COLLECTOR`. Legacy records are labeled rather than silently pretending they belong to the current schema.
 
-## V2.5 risk regimes
+## V2.6 risk regimes
 
 Each is an independent **0–100 risk index, not a probability**:
 
@@ -130,7 +129,7 @@ Open `http://<docker-host>:8501`. SQLite data persist in `./data`.
 python collector.py
 ```
 
-The V2.5 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
+The V2.6 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
 
 ```text
 DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
@@ -159,14 +158,14 @@ python test_v24.py
 python test_v25.py
 ```
 
-The V2.5 regression suite additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
+The V2.6 regression suite additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
 
 ## Important limitations
 
 - Auction absorption is now restored from official FiscalData, but **true auction tails** still require a dependable live when-issued yield source; bid-to-cover/bidder mix are not the same as a tail.
 - FX option risk reversals, cross-currency basis and deep Treasury order-book data are still high-priority institutional-data additions.
 - `check_source_url()` validates reachability and source class only; it does **not** prove a claim is true. High-impact facts must still be verified against the source before they are marked VERIFIED.
-- TIC and COFER are lagged by design; V2.5 discounts that lag rather than pretending the data are current.
+- TIC and COFER are lagged by design; V2.6 discounts that lag rather than pretending the data are current.
 - Stress-test returns are explicit scenario assumptions, not forecasts.
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 

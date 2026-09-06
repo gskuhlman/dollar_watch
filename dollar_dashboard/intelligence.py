@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.5 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.6 (+local research dashboard)"}
 
 CFTC_DATASET = "gpe5-46if"  # Traders in Financial Futures - futures only
 CFTC_ENDPOINTS = [
@@ -348,7 +348,7 @@ def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.
 
     DefiLlama's USD-pegged universe can contain yield-bearing/tokenized-RWA products such as
     USDY or USYC. Those products are economically relevant to dollar/Treasury demand, but a
-    price above $1 can be intentional NAV accumulation rather than a depeg. V2.5 therefore
+    price above $1 can be intentional NAV accumulation rather than a depeg. V2.6 therefore
     separates transactional stablecoins from tokenized Treasury/RWA products before applying
     any peg-stability rule.
     """
@@ -585,6 +585,10 @@ def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.Data
                 else:
                     freshness = "very stale"; freshness_factor = 0.35
         score = 100.0 * freshness_factor if ok else 0.0
+        cap = info.get("confidence_cap")
+        if cap is not None:
+            try: score = min(score, max(0.0, min(100.0, float(cap))))
+            except Exception: pass
         weighted += weight * score
         total_w += weight
         notes = str(info.get("notes", "") or "")
@@ -599,3 +603,68 @@ def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.Data
     overall = weighted / total_w if total_w else 0.0
     return pd.DataFrame(rows), float(overall)
 
+
+
+def summarize_tic_transactions(fred_hist: pd.DataFrame) -> dict[str, Any]:
+    """Decompose reported foreign Treasury position changes into transactions and non-transaction effects.
+
+    Holdings include all maturities, while published valuation-change series cover long-term Treasuries.
+    Therefore the residual is deliberately called ``non_transaction_residual`` rather than pure valuation.
+    This prevents holdings changes from being mislabeled as demand.
+    """
+    if fred_hist is None or fred_hist.empty:
+        return {}
+    specs = {
+        "grand_total": {
+            "holdings": "Foreign Treasury holdings grand total (millions)",
+            "transactions": "Foreign Treasury net transactions grand total (millions)",
+            "valuation_lt": "Foreign LT Treasury valuation change grand total (millions)",
+        },
+        "foreign_official": {
+            "holdings": "Foreign official Treasury holdings (millions)",
+            "transactions": "Foreign Treasury net transactions official (millions)",
+            "valuation_lt": "Foreign LT Treasury valuation change official (millions)",
+        },
+    }
+    out = {}
+    for key, sp in specs.items():
+        needed=[sp["holdings"],sp["transactions"]]
+        if any(c not in fred_hist.columns for c in needed):
+            continue
+        h=fred_hist[sp["holdings"]].dropna()
+        t=fred_hist[sp["transactions"]].dropna()
+        if len(h)<2 or t.empty:
+            continue
+        common=h.index.intersection(t.index)
+        if len(common)==0:
+            continue
+        d=common[-1]
+        h_now=float(h.loc[d])
+        prev_h=h.loc[h.index<d]
+        if prev_h.empty:
+            continue
+        h_prev=float(prev_h.iloc[-1])
+        pos_change=h_now-h_prev
+        net_tx=float(t.loc[d])
+        val=None
+        vcol=sp.get("valuation_lt")
+        if vcol in fred_hist.columns:
+            vv=fred_hist[vcol].dropna()
+            if d in vv.index:
+                val=float(vv.loc[d])
+        residual=pos_change-net_tx-(val or 0.0)
+        out[key]={
+            "date": str(pd.Timestamp(d).date()),
+            "ending_holdings_mn": h_now,
+            "monthly_position_change_mn": pos_change,
+            "net_transactions_mn": net_tx,
+            "long_term_valuation_change_mn": val,
+            "non_transaction_residual_mn": residual,
+            "transaction_share_of_position_change": None if abs(pos_change)<1e-9 else net_tx/pos_change,
+            "note": "Transactions measure active net purchases/sales. Long-term valuation is price effect on LT Treasuries; residual also captures short-term valuation/custody/reclassification/other changes.",
+        }
+    # private net transactions are directly published and useful even without a private holdings decomposition.
+    c="Foreign Treasury net transactions private (millions)"
+    if c in fred_hist.columns and not fred_hist[c].dropna().empty:
+        ss=fred_hist[c].dropna(); out["foreign_private"]={"date":str(ss.index[-1].date()),"net_transactions_mn":float(ss.iloc[-1])}
+    return out

@@ -91,6 +91,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     auction_conf = _conf(snapshot, "auction")
     cftc_conf = _conf(snapshot, "cftc")
     tic_conf = _conf(snapshot, "tic")
+    tic_tx_conf = _conf(snapshot, "tic_transactions", default=0.0)
     cofer_conf = _conf(snapshot, "cofer")
     fiscal_conf = _conf(snapshot, "fiscal")
     stable_conf = _conf(snapshot, "stablecoin")
@@ -117,6 +118,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     hy = _safe(_v(f, "High-yield spread", "last"))
     nfci = _safe(_v(f, "Financial Conditions Index", "last"))
     swaps = _safe(_v(f, "Central bank liquidity swaps (millions)", "last"))
+    fima_repo = _safe(_v(f, "FIMA repo - foreign official (millions)", "last"))
     swaps_1m = _safe(_v(f, "Central bank liquidity swaps (millions)", "1m_change"))
     sofr_iorb = _safe(_v(f, "SOFR-IORB spread", "last"), None)
     sofr99_iorb = _safe(_v(f, "SOFR99-IORB spread", "last"), None)
@@ -173,7 +175,17 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     policy_intent += policy_news
     policy_intent = _clamp(policy_intent)
 
-    external = 0.43 * tic_pressure + 0.22 * cofer_pressure
+    external = 0.36 * tic_pressure + 0.22 * cofer_pressure
+    tic_tx_meta = snapshot.get("tic_transaction_meta", {}) or {}
+    official_net_tx = _safe(_v(tic_tx_meta, "foreign_official", "net_transactions_mn"), None)
+    total_net_tx = _safe(_v(tic_tx_meta, "grand_total", "net_transactions_mn"), None)
+    if official_net_tx is not None:
+        if official_net_tx < -25000: external += 8 * tic_tx_conf
+        if official_net_tx < -50000: external += 6 * tic_tx_conf
+        if official_net_tx > 25000: external -= 5 * tic_tx_conf
+    if total_net_tx is not None:
+        if total_net_tx < -50000: external += 8 * tic_tx_conf
+        if total_net_tx > 50000: external -= 6 * tic_tx_conf
     external += 0.16 * ov.get("foreign_official_selling", 0)
     external += 0.20 * ov.get("brics_payment_progress", 0)
     external += 0.13 * ov.get("central_bank_gold_rotation", 0)
@@ -288,7 +300,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     squeeze = 6.0 + 0.70 * plumbing
     if dxy_1m > 0.03: squeeze += 12 * market_conf; drivers["dollar_squeeze"].append("DXY up >3% in ~1 month")
     if dxy_1m > 0.06: squeeze += 8 * market_conf
-    if swaps > 1000: drivers["dollar_squeeze"].append("Fed foreign-central-bank swap usage is elevated")
+    if swaps > 1000: drivers["dollar_squeeze"].append("Central-bank USD liquidity swap usage is elevated")
+    if fima_repo > 1000: drivers["dollar_squeeze"].append("FIMA foreign-official repo usage is elevated")
     if sofr_iorb is not None and sofr_iorb > 0.10: drivers["dollar_squeeze"].append("Median SOFR is >10bp above IORB")
     if repo_tail_confirm: drivers["dollar_squeeze"].append("SOFR 99th-percentile repo tail is persistently/historically stressed")
     elif repo_tail_watch: drivers["dollar_squeeze"].append("SOFR 99th-percentile repo tail is elevated; median SOFR remains a separate signal")
@@ -343,6 +356,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "CFTC USD-downside": {"raw": round(cftc_raw,1), "confidence": round(cftc_conf*100,1), "effective": round(cftc_pressure,1)},
         "FX squeeze": {"raw": round(fx_squeeze_raw,1), "confidence": round(cftc_conf*100,1), "effective": round(fx_squeeze_auto,1)},
         "TIC de-dollarization": {"raw": round(tic_raw,1), "confidence": round(tic_conf*100,1), "effective": round(tic_pressure,1)},
+        "TIC transaction demand": {"raw": round(total_net_tx or 0,1), "confidence": round(tic_tx_conf*100,1), "effective": round((total_net_tx or 0)*tic_tx_conf,1), "units":"$mn net transactions"},
         "COFER": {"raw": round(cofer_raw,1), "confidence": round(cofer_conf*100,1), "effective": round(cofer_pressure,1)},
         "Fiscal flows": {"raw": round(fiscal_flow_raw,1), "confidence": round(fiscal_conf*100,1), "effective": round(fiscal_flow,1)},
         "Stablecoin support": {"raw": round(stable_raw,1), "confidence": round(stable_conf*100,1), "effective": round(stablecoin_auto,1)},
@@ -350,7 +364,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "Treasury buyback results": {"raw": round(buyback_intensity,1), "confidence": round(buyback_results_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_results_conf),1)},
     }
 
-    # Evidence coverage is separate from risk. V2.5 distinguishes broad/generic coverage from
+    # Evidence coverage is separate from risk. V2.6 distinguishes broad/generic coverage from
     # CRITICAL coverage. Plenty of market data cannot substitute for missing verified policy intent
     # in the managed-devaluation regime, and lots of spot data cannot substitute for stale reserve data.
     def _verified(keys):
@@ -367,7 +381,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "Fiscal / Treasury supply stress": _clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.05*buyback_schedule_conf*100 + 0.05*buyback_results_conf*100),
         "Inflation / monetary debasement": _clamp(0.62*fred_conf*100 + 0.28*market_conf*100 + 0.10*news_conf*100),
         "Dollar funding squeeze": _clamp(0.80*fred_conf*100 + 0.20*market_conf*100),
-        "Reserve-confidence crisis": _clamp(0.22*market_conf*100 + 0.20*fred_conf*100 + 0.22*tic_conf*100 + 0.18*cofer_conf*100 + 0.10*stable_conf*100 + 0.08*news_conf*100),
+        "Reserve-confidence crisis": _clamp(0.20*market_conf*100 + 0.18*fred_conf*100 + 0.18*tic_conf*100 + 0.12*tic_tx_conf*100 + 0.16*cofer_conf*100 + 0.08*stable_conf*100 + 0.08*news_conf*100),
         "FX positioning squeeze": _clamp(0.72*cftc_conf*100 + 0.28*market_conf*100),
     }
     critical_coverage = {
@@ -378,7 +392,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         # in cross-currency basis / FX swaps. Offshore coverage is therefore an explicit critical
         # subcomponent rather than silently calling the regime 100% observed.
         "Dollar funding squeeze": _clamp(0.62*fred_conf*100 + 0.08*market_conf*100 + 0.30*offshore_funding_coverage),
-        "Reserve-confidence crisis": _clamp(0.30*tic_conf*100 + 0.25*cofer_conf*100 + 0.20*fred_conf*100 + 0.15*reserve_policy_critical + 0.10*market_conf*100),
+        "Reserve-confidence crisis": _clamp(0.24*tic_conf*100 + 0.20*tic_tx_conf*100 + 0.21*cofer_conf*100 + 0.18*fred_conf*100 + 0.10*reserve_policy_critical + 0.07*market_conf*100),
         "FX positioning squeeze": _clamp(0.78*cftc_conf*100 + 0.22*market_conf*100),
     }
     # Critical coverage gets half the weight. Thus a fully populated market tape with zero verified

@@ -3,7 +3,7 @@
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
 
 
-## V2.5 — Completed from fourth red-team review
+## V2.6 — Completed from fourth red-team review
 
 - [x] Discover completed TreasuryDirect buyback result XMLs independently of the dynamic webpage; derive official result filenames from operation date/start time and use a bounded fallback probe.
 - [x] Separate buyback schedule health from buyback-results health so announced capacity cannot masquerade as observed completed activity.
@@ -15,7 +15,7 @@ The backlog is ranked by **decision value**, not by ease of implementation. A fe
 - [x] Add official-source-family discovery and claim-relevance ranking for the verification queue.
 - [x] Add Ollama/OpenAI-compatible claim checks against top primary-source candidates while preserving the human VERIFIED gate.
 - [x] Persist primary-source verification checks in SQLite with verdict, source tier, model and provenance.
-- [x] Add V2.5 regression tests for buyback URL generation/discovery, repo-tail separation, offshore funding coverage and verification persistence/relevance.
+- [x] Add V2.6 regression tests for buyback URL generation/discovery, repo-tail separation, offshore funding coverage and verification persistence/relevance.
 
 
 ## V2.4 — Completed from third red-team review
@@ -100,7 +100,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **Treasury market-depth / bid-ask data.** Track order-book depth and price impact, especially 10Y/30Y.
 - [ ] **Repo fails and fails-to-deliver.** Add NY Fed primary-dealer Treasury settlement/fails data.
 - [x] **SOFR distribution / repo dispersion baseline.** SOFR99-IORB, TGCR-IORB and TGCR dispersion are implemented; richer transaction-level repo detail remains P1.
-- [ ] **Cross-currency basis.** EUR/USD, JPY/USD and CHF/USD basis as direct dollar-funding-pressure gauges. V2.5 now exposes this absence explicitly in coverage rather than pretending global funding is fully observed.
+- [ ] **Cross-currency basis.** EUR/USD, JPY/USD and CHF/USD basis as direct dollar-funding-pressure gauges. V2.6 now exposes this absence explicitly in coverage rather than pretending global funding is fully observed.
 - [ ] **FX options risk reversals.** 1W/1M/3M USD downside skew for EUR, JPY, CHF and broad dollar indexes.
 - [ ] **FX implied volatility term structure.** Detect demand for near-term crisis protection before spot moves.
 - [ ] **Treasury futures basis-trade monitor.** Futures/cash dislocation, hedge-fund leverage proxies and dealer repo exposure.
@@ -121,7 +121,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **Stablecoin Treasury-demand estimator.** Apply issuer-specific reserve composition instead of treating supply as a generic dollar-demand proxy.
 - [ ] **Stablecoin issuer concentration / redemption risk.** USDT, USDC, USD1 and others scored for reserve/custodian/peg concentration.
 - [x] **Tokenized Treasury/RWA monitoring baseline.** Separate RWA products from stablecoins and track observed supply. [ ] Add issuer-specific reserve/on-chain composition and flows.
-- [~] **Automatic policy-document ingestion.** V2.5 can discover/rank/fetch primary-source candidates for queued claims; dedicated structured feeds and full change detection remain open.
+- [~] **Automatic policy-document ingestion.** V2.6 can discover/rank/fetch primary-source candidates for queued claims; dedicated structured feeds and full change detection remain open.
 - [ ] **Actor statement-change detection.** Compare current wording with each actor's prior statements and identify shifts in policy language.
 - [ ] **Financial-disclosure change monitor.** Track new public disclosures for senior officials and relevant business/economic interests while keeping exposure separate from motive claims.
 - [ ] **Foreign-policy actor profiles.** China PBOC/SAFE, BOJ/MOF, ECB, SNB, Saudi/UAE monetary authorities, BRICS institutions.
@@ -216,3 +216,22 @@ These are the next features most likely to improve warning time or portfolio dec
 - Stablecoin supply is **not equivalent dollar-for-dollar to Treasury demand**.
 - DXY falling is **not enough to call a reserve-confidence crisis**.
 - A crisis can initially cause a **dollar squeeze and stronger USD**, even if the long-run problem is dollar confidence.
+
+## V2.6 completed
+
+- [x] Buyback-result completeness gating and max-amount parse status.
+- [x] Link expired 10Y/30Y auction evidence to next announced same-tenor auction.
+- [x] Separate Fed central-bank liquidity swaps from FIMA foreign-official repo.
+- [x] Add TIC Treasury net-transaction and long-term valuation-change decomposition.
+- [x] Stop treating changes in holdings as equivalent to transaction demand.
+- [x] Auto-persist complete discovery claims into a deduplicated verification queue.
+- [x] Optional bounded automatic P0/P1 primary-source + LLM claim checking, still human-gated for VERIFIED scoring.
+- [x] Conditional weak-auction portfolio response: inflationary fiscal vs real-yield fiscal stress.
+- [x] V2.6 regression tests.
+
+## Freeze / observe next
+
+- [ ] Accumulate live history through Treasury auctions, CFTC updates, TIC/COFER releases and FOMC events before changing core regime architecture again.
+- [ ] Calibrate trigger thresholds against accumulated and historical event data.
+- [ ] Add dependable cross-currency-basis/FX-swap feeds if a trustworthy accessible source is available.
+- [ ] Replace static scenario asset shocks with empirically estimated regime/event betas after sufficient history exists.

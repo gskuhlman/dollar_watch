@@ -108,6 +108,7 @@ def connect():
     """)
     _ensure_events(con)
     _ensure_verification_checks(con)
+    _ensure_verification_queue(con)
     return con
 
 
@@ -271,3 +272,39 @@ def recent_alerts(limit: int = 100) -> list[dict]:
         except Exception: d["payload"]={}
         out.append(d)
     return out
+
+
+def _ensure_verification_queue(con) -> None:
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS verification_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_key TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            priority TEXT, bucket TEXT, claim TEXT NOT NULL, headline_source TEXT, headline_url TEXT,
+            preferred_source TEXT, status TEXT DEFAULT 'QUEUED', candidate_url TEXT, candidate_tier TEXT,
+            llm_verdict TEXT, llm_explanation TEXT, approved_status TEXT DEFAULT 'UNVERIFIED'
+        )
+    """)
+
+def upsert_verification_queue(rows: list[dict]) -> int:
+    import hashlib
+    con=connect(); _ensure_verification_queue(con); n=0; now=datetime.now(timezone.utc).isoformat()
+    for r in rows or []:
+        claim=str(r.get('claim') or '').strip(); bucket=str(r.get('bucket') or '').strip(); url=str(r.get('link') or '').strip()
+        if len(claim)<10 or not bucket: continue
+        key=hashlib.sha256((bucket+'|'+claim).encode('utf-8')).hexdigest()
+        con.execute("""INSERT INTO verification_queue(claim_key,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status)
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_key) DO UPDATE SET updated_at=excluded.updated_at,priority=excluded.priority,headline_source=excluded.headline_source,headline_url=excluded.headline_url,preferred_source=excluded.preferred_source""",
+        (key,now,now,r.get('priority'),bucket,claim,r.get('source'),url,r.get('preferred_verification_source'),'QUEUED')); n+=1
+    con.commit(); con.close(); return n
+
+def recent_verification_queue(limit:int=100) -> list[dict]:
+    con=connect(); _ensure_verification_queue(con)
+    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,llm_verdict,llm_explanation,approved_status FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
+    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','llm_verdict','llm_explanation','approved_status']
+    return [dict(zip(keys,r)) for r in rows]
+
+def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED') -> None:
+    con=connect(); _ensure_verification_queue(con)
+    con.execute("UPDATE verification_queue SET updated_at=?,candidate_url=?,candidate_tier=?,llm_verdict=?,llm_explanation=?,status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),candidate_url,candidate_tier,verdict,explanation,status,int(queue_id))); con.commit(); con.close()

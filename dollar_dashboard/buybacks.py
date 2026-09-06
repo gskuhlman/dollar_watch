@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.5 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.6 (+local research dashboard)"}
 BUYBACK_PAGE = "https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/"
 SCHEDULE_XML_URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
 RESULT_DIR = "https://www.treasurydirect.gov/instit/annceresult/press/preanre/{year}/"
@@ -106,7 +106,7 @@ def _normalize_schedule_record(rec: dict) -> dict:
         "operation_type": _first(rec, ["operationType", "buybackType", "type"], ""),
         "security_type": _first(rec, ["securityType"], ""),
         "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
-        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maximumParAmount", "maxParAmount", "maximumAmount"])),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maximumAmount", "maxAmountToBeRedeemed"])),
         "operation_status": _first(rec, ["operationStatus"], "SCHEDULED"),
         "announcement_type": _first(rec, ["announcementType"], ""),
         "source_kind": "SCHEDULE",
@@ -206,7 +206,7 @@ def _normalize_result_xml(content: bytes, source_url: str) -> dict:
         "operation_type": _first(rec, ["operationType", "buybackType"], ""),
         "security_type": _first(rec, ["securityType"], ""),
         "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
-        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maximumParAmount", "maxParAmount"])),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"])),
         "total_offered": _money(_first(rec, ["totalParAmountOffered", "totalAmountOffered"])),
         "total_accepted": _money(_first(rec, ["totalParAmountAccepted", "totalAmountAccepted"])),
         "issues_eligible": pd.to_numeric(_first(rec, ["noIssueEligible", "numberIssuesEligible", "numberOfIssuesEligible"]), errors="coerce"),
@@ -221,6 +221,7 @@ def _normalize_result_xml(content: bytes, source_url: str) -> dict:
 def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_days: int = 180, max_operations: int = 50) -> tuple[pd.DataFrame, dict]:
     now = pd.Timestamp.now(tz="UTC")
     urls = []
+    expected_urls = []
     strategies=[]
     if schedule is not None and not schedule.empty:
         s = schedule.copy()
@@ -231,8 +232,8 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
             if not u:
                 u = _result_url_from_operation_date(row.get("operation_date"))
             if u:
-                urls.append(u)
-        if urls: strategies.append("schedule-derived")
+                urls.append(u); expected_urls.append(u)
+        if expected_urls: strategies.append("schedule-derived")
     # Static HTML occasionally exposes direct BBR links; retain this cheap discovery path.
     discovered=_discover_result_links(timeout=min(timeout, 20))
     if discovered:
@@ -245,6 +246,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
     urls = list(dict.fromkeys(urls))[-max_operations:]
 
     rows, failures, not_found = [], [], 0
+    found_urls=set()
     for u in urls:
         try:
             r = requests.get(u, headers=UA, timeout=timeout)
@@ -258,7 +260,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
             # announcement XML under an unexpected server redirect.
             status=str(row.get("operation_status") or "").lower()
             if status == "results" or row.get("total_offered") is not None or row.get("total_accepted") is not None:
-                rows.append(row)
+                rows.append(row); found_urls.add(u)
         except Exception as exc:
             failures.append({"url": u, "error": str(exc)})
     df = pd.DataFrame(rows)
@@ -268,6 +270,9 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
         df = df.sort_values("operation_date")
     return df, {
         "result_urls_attempted": len(urls),
+        "expected_result_urls": len(set(expected_urls)),
+        "expected_results_found": len(set(expected_urls) & found_urls),
+        "result_completeness_pct": (100.0 * len(set(expected_urls) & found_urls) / len(set(expected_urls))) if expected_urls else None,
         "result_operations": int(len(df)),
         "result_not_found": int(not_found),
         "result_failures": failures[:10],
@@ -277,7 +282,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
 
 
 def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
-    """V2.5 buyback collector.
+    """V2.6 buyback collector.
 
     The official tentative schedule and completed TreasuryDirect result XMLs are separate evidence
     surfaces. A result-XML failure does not erase a successfully retrieved schedule, and a schedule
@@ -294,6 +299,8 @@ def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
     # result rows if the current quarterly schedule no longer contains an older operation.
     if schedule.empty:
         merged = results.copy()
+        if not merged.empty:
+            merged["has_result"] = True
     else:
         merged = schedule.copy()
         if not results.empty:
@@ -338,6 +345,9 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
     offered = float(pd.to_numeric(completed.get("total_offered"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_offered" in completed else 0.0
     accepted = float(pd.to_numeric(completed.get("total_accepted"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_accepted" in completed else 0.0
     offer_accept = (offered / accepted) if accepted > 0 else None
+    completeness = meta.get("result_completeness_pct")
+    result_classification = "COMPLETE" if completeness is not None and completeness >= 80 else ("INCOMPLETE" if completeness is not None else "UNKNOWN_EXPECTED_SET")
+    conclusions_allowed = result_classification == "COMPLETE"
 
     # Policy-response intensity measures announced/used capacity, not market stress or QE.
     intensity = 0.0
@@ -345,7 +355,7 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         intensity += min(35.0, 8.0 * len(long_upcoming))
     if long_max >= 4_000_000_000:
         intensity += 15.0
-    if not long_completed.empty:
+    if conclusions_allowed and not long_completed.empty:
         intensity += min(25.0, 5.0 * len(long_completed))
     intensity = min(100.0, intensity)
 
@@ -365,6 +375,10 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "completed_offer_accept_ratio": None if offer_accept is None else round(offer_accept, 3),
         "latest_completed_operation": None if latest_completed is None else latest_completed.isoformat(),
         "results_available": bool(len(completed)),
+        "result_classification": result_classification,
+        "results_conclusions_allowed": conclusions_allowed,
+        "result_completeness_pct": completeness,
+        "max_amount_parse_status": "OK" if total_max > 0 else "PARSE_FAILED_OR_ZERO",
         "intensity": round(intensity, 1),
         "interpretation": "Treasury debt-management/liquidity-support activity. Not QE and not proof of failed auction demand.",
     }

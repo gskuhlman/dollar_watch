@@ -13,7 +13,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.5 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.6 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -65,6 +65,13 @@ FRED_SERIES = {
     "Reserve balances (billions)": "WRESBAL",
     "Treasury General Account (billions)": "WTREGEN",
     "Central bank liquidity swaps (millions)": "SWPT",
+    "FIMA repo - foreign official (millions)": "H41RESPPALGTRFNWW",
+    "Foreign Treasury holdings grand total (millions)": "FORTREASPOS99996",
+    "Foreign Treasury net transactions grand total (millions)": "FORTREASNET99996",
+    "Foreign Treasury net transactions official (millions)": "FORTREASNET99990",
+    "Foreign Treasury net transactions private (millions)": "FORTREASNET99991",
+    "Foreign LT Treasury valuation change grand total (millions)": "FORLTTREASVALCHG99996",
+    "Foreign LT Treasury valuation change official (millions)": "FORLTTREASVALCHG99990",
     "Foreign official Treasury holdings (millions)": "FORTREASPOS99990",
     "Foreign custody UST weekly (millions)": "WMTSEC1",
     "Foreign custody UST YoY change (millions)": "RESH4FGXAWXCH52NWW",
@@ -190,7 +197,7 @@ def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataF
             "1y_change": delta_days(365),
         }
 
-    # V2.5 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
+    # V2.6 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
     # thing as the median SOFR-IORB spread. Track its own historical extremeness and
     # persistence so the dashboard cannot describe a tail move as being "1bp from"
     # the median funding-stress trigger.
@@ -219,7 +226,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.5 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.6 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -319,7 +326,7 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
     """Fetch official Treasury auction results without a brittle fields= query.
 
-    FiscalData returns the full auction schema; V2.5 normalizes legacy/current aliases locally.
+    FiscalData returns the full auction schema; V2.6 normalizes legacy/current aliases locally.
     This prevents a single renamed or misspelled API field from turning the auction channel off.
     """
     params = {

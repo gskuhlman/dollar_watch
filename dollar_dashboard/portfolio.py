@@ -192,11 +192,44 @@ def _asset_rationale(asset: str, action: str, regime_scores: dict[str, float], s
     evidence = f" Active evidence: {'; '.join(drivers)}." if drivers else " No high-confidence causal driver beyond the regime indices is active."
     return f"{decision}. Top risks: {', '.join(bits)}. {asset_context}{evidence}"
 
+def _apply_machine_precommitments(rec: dict[str,float], machine_triggers: list[dict] | None) -> tuple[dict[str,float], list[str]]:
+    """Apply only fresh TRIGGERED machine pre-commitments; aging/pending signals never trade.
+
+    The weak-auction response is conditional on the trigger's stress_flavor so real-yield
+    fiscal stress does not mechanically add TIPS duration.
+    """
+    out=rec.copy(); notes=[]
+    by={str(t.get("id")):t for t in (machine_triggers or [])}
+    weak=by.get("weak_10y_30y_pair")
+    if weak and weak.get("status")=="TRIGGERED":
+        flavor=weak.get("stress_flavor")
+        if flavor=="INFLATIONARY_FISCAL":
+            out["T-bills / cash equivalents"]-=3.0
+            out["TIPS"]+=2.0
+            out["Gold"]+=1.0
+            notes.append("Fresh weak 10Y/30Y auctions + elevated breakevens: pre-commitment applied (+2pp TIPS, +1pp gold, -3pp T-bills).")
+        else:
+            # Anchored inflation + rising real/term yields: avoid adding TIPS duration.
+            out["T-bills / cash equivalents"]+=2.0
+            out["Gold"]+=1.0
+            out["TIPS"]-=1.0
+            out["US real-asset / value equities"]-=1.0
+            out["Developed ex-US equities (unhedged)"]-=1.0
+            notes.append("Fresh weak 10Y/30Y auctions with anchored breakevens: real-yield fiscal pre-commitment applied (+2pp T-bills, +1pp gold; -1pp each TIPS/US real-assets/ex-US).")
+    # Normalize for defensive robustness if a baseline is unusual.
+    for a in ASSETS:
+        out[a]=max(0.0,float(out[a]))
+    total=sum(out.values())
+    if total>0:
+        out={a:100.0*out[a]/total for a in ASSETS}
+    return out,notes
+
+
 def recommend(
     regime_scores: dict[str, float], baseline: dict[str, float], portfolio_value: float,
     min_trade_pct: float = 2.0, market_summary: dict | None = None, confidence: float = 100.0,
     max_turnover_pct: float = 25.0, min_position_pct: float = 2.0, min_trade_dollars: float = 1000.0,
-    score_details: dict | None = None,
+    score_details: dict | None = None, machine_triggers: list[dict] | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     base = {a: float(baseline.get(a, 0)) for a in ASSETS}
     total_base = sum(base.values())
@@ -220,6 +253,8 @@ def recommend(
     rec = {a: ((1-overlay)*base[a] + overlay*crisis_target[a]) if total_raw else base[a] for a in ASSETS}
     rec = {k: v * 100.0 / sum(rec.values()) for k, v in rec.items()}
     rec, chase_notes = _apply_chase_limiter(base, rec, market_summary)
+    rec, trigger_notes = _apply_machine_precommitments(rec, machine_triggers)
+    chase_notes.extend(trigger_notes)
     rec, token_notes = _remove_token_positions(base, rec, min_position_pct)
     chase_notes.extend(token_notes)
 

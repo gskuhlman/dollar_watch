@@ -11,7 +11,7 @@ from .data import (
 )
 from .intelligence import (
     fetch_cftc_tff, summarize_cftc_fx, summarize_fx_positioning_squeeze,
-    fetch_tic_major_holders, summarize_tic,
+    fetch_tic_major_holders, summarize_tic, summarize_tic_transactions,
     fetch_stablecoins, summarize_stablecoins,
     fetch_imf_cofer_usd_share, summarize_cofer,
     build_data_health, period_last_date,
@@ -102,13 +102,16 @@ def collect_live_bundle() -> dict[str, Any]:
         schedule_ok = int(buyback_meta.get("schedule_operations",0) or 0) > 0
         results_ok = bool(buyback_meta.get("results_available"))
         latest_result = pd.to_datetime(buyback_meta.get("latest_completed_operation"), errors="coerce", utc=True)
+        schedule_cap = 100.0 if buyback_meta.get("max_amount_parse_status") == "OK" else 70.0
         status["Treasury buyback schedule"] = {
-            "ok": schedule_ok, "weight": 0.45, "last_date": pd.Timestamp.now(tz="UTC"),
+            "ok": schedule_ok, "weight": 0.45, "last_date": pd.Timestamp.now(tz="UTC"), "confidence_cap": schedule_cap,
             "notes": (f"Official tentative capacity/calendar only; schedule-rows={buyback_meta.get('schedule_operations',0)}, "
                       f"long-end scheduled={buyback_meta.get('long_end_operations',0)}. Announced capacity is not execution."),
         }
+        result_cap = buyback_meta.get("result_completeness_pct")
+        if result_cap is None: result_cap = 55.0 if results_ok else 0.0
         status["Treasury buyback results"] = {
-            "ok": results_ok, "weight": 0.65,
+            "ok": results_ok, "weight": 0.65, "confidence_cap": result_cap,
             "last_date": latest_result if pd.notna(latest_result) else None,
             "notes": (f"Completed result XMLs; attempted={buyback_meta.get('result_urls_attempted',0)}, "
                       f"completed={buyback_meta.get('completed_operations',0)}, strategy={buyback_meta.get('result_discovery_strategy','?')}. "
@@ -137,11 +140,15 @@ def collect_live_bundle() -> dict[str, Any]:
         tic = fetch_tic_major_holders()
         tic_summary, tic_pressure, tic_meta = summarize_tic(tic)
         bundle["tic"] = tic; bundle["tic_summary"] = tic_summary; bundle["tic_pressure"] = tic_pressure; bundle["tic_meta"] = tic_meta
+        bundle["tic_transaction_meta"] = summarize_tic_transactions(bundle.get("fred_hist", pd.DataFrame()))
         last = tic["date"].max() if not tic.empty and "date" in tic else None
         status["TIC country Treasury holdings"] = {"ok": not tic_summary.empty, "weight": 1.1, "last_date": last, "notes": "Monthly; structurally lagged and confidence-weighted before scoring"}
+        tx_date = pd.to_datetime((bundle.get("tic_transaction_meta",{}).get("grand_total",{}) or {}).get("date"), errors="coerce", utc=True)
+        status["TIC Treasury transactions / valuation"] = {"ok": bool(bundle.get("tic_transaction_meta")), "weight": 1.0, "last_date": tx_date, "notes": "Active net transactions are separated from position changes, LT valuation and residual/custody effects."}
     except Exception as e:
-        bundle["tic"] = pd.DataFrame(); bundle["tic_summary"] = pd.DataFrame(); bundle["tic_pressure"] = 0.0; bundle["tic_meta"] = {}
+        bundle["tic"] = pd.DataFrame(); bundle["tic_summary"] = pd.DataFrame(); bundle["tic_pressure"] = 0.0; bundle["tic_meta"] = {}; bundle["tic_transaction_meta"] = {}
         status["TIC country Treasury holdings"] = {"ok": False, "weight": 1.1, "error": str(e)}
+        status["TIC Treasury transactions / valuation"] = {"ok": False, "weight": 1.0, "error": str(e)}
 
     try:
         cofer = fetch_imf_cofer_usd_share()
@@ -197,6 +204,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "auction": source_confidence.get("Treasury auctions", 0.0),
         "cftc": source_confidence.get("CFTC FX positioning", 0.0),
         "tic": source_confidence.get("TIC country Treasury holdings", 0.0),
+        "tic_transactions": source_confidence.get("TIC Treasury transactions / valuation", 0.0),
         "cofer": source_confidence.get("IMF COFER", 0.0),
         "fiscal": source_confidence.get("Treasury fiscal flows", 0.0),
         "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
@@ -207,7 +215,7 @@ def collect_live_bundle() -> dict[str, Any]:
     }
 
     # Cross-currency basis / OTC FX-swap stress is not available from a dependable free
-    # real-time feed in V2.5.  Keep the missing offshore layer explicit so domestic repo
+    # real-time feed in V2.6.  Keep the missing offshore layer explicit so domestic repo
     # coverage can never be mislabeled as 100% observation of global dollar funding.
     offshore_funding_meta = {
         "available": False,
@@ -230,6 +238,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "tic_dedollarization_pressure": float(bundle.get("tic_pressure", 0) or 0),
         "tic_summary": _records(bundle.get("tic_summary", pd.DataFrame())),
         "tic_meta": bundle.get("tic_meta", {}),
+        "tic_transaction_meta": bundle.get("tic_transaction_meta", {}),
         "cofer_dedollarization_pressure": float(bundle.get("cofer_pressure", 0) or 0),
         "cofer_meta": bundle.get("cofer_meta", {}),
         "fiscal_flow_stress_auto": float(bundle.get("fiscal_stress", 0) or 0),

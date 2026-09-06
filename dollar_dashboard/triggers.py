@@ -59,7 +59,14 @@ def _asof(snapshot: dict, rows: list[dict]) -> pd.Timestamp:
 def _next_auction(snapshot: dict, term: str, asof: pd.Timestamp) -> pd.Timestamp | pd.NaT:
     dates=[]
     for row in snapshot.get("upcoming_auctions", []) or []:
-        if str(row.get("term_key")) != term:
+        key=str(row.get("term_key") or row.get("security_term") or row.get("term") or "").strip().lower()
+        want=str(term).strip().lower()
+        import re
+        key_num=(re.search(r"(\d+)\s*[- ]?year",key) or re.search(r"^(\d+)$",key))
+        want_num=(re.search(r"(\d+)\s*[- ]?year",want) or re.search(r"^(\d+)$",want))
+        if key_num and want_num:
+            if key_num.group(1) != want_num.group(1): continue
+        elif key != want:
             continue
         d=pd.to_datetime(row.get("auction_date"), errors="coerce", utc=True)
         if pd.notna(d) and d >= asof.normalize():
@@ -132,6 +139,7 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     dxy_3m = _safe(_v(m, "DXY", "3m"))
     custody_yoy = _safe(_v(f, "Foreign custody UST YoY change (millions)", "last"))
     swaps = _safe(_v(f, "Central bank liquidity swaps (millions)", "last"), 0)
+    fima = _safe(_v(f, "FIMA repo - foreign official (millions)", "last"), 0)
     sofr_iorb = _safe(_v(f, "SOFR-IORB spread", "last"))
     sofr99_iorb = _safe(_v(f, "SOFR99-IORB spread", "last"))
     sofr99_pct = _safe(_v(f, "SOFR99-IORB spread", "percentile_1y"))
@@ -146,11 +154,19 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     weak_pair = weak10 and weak30
     clean_pair = _clean_auction(ten) and _clean_auction(thirty)
     base_meta={"auction_lifecycle":pair_life,"10Y_lifecycle":life10,"30Y_lifecycle":life30}
+    stress_flavor = "INFLATIONARY_FISCAL" if (be is not None and be >= 2.60) else "REAL_YIELD_FISCAL"
+    weak_action = (
+        "Inflationary fiscal stress: +2pp TIPS / +1pp gold funded from T-bills, subject to guardrails."
+        if stress_flavor == "INFLATIONARY_FISCAL" else
+        "Real-yield fiscal stress: preserve/add T-bills, consider +1pp gold, and reduce rate-sensitive risk rather than mechanically adding TIPS."
+    )
     out.append({
         "id": "weak_10y_30y_pair", "side": "CONFIRM",
         "status": _condition_status(weak_pair,pair_life,partial=weak10 or weak30),
         "condition": "10Y and 30Y: BTC >0.15 below prior-8 average, dealer >14%, indirect <65%",
-        "action": "Add +2pp TIPS / +1pp gold funded from cash, subject to portfolio guardrails only while evidence is fresh.",
+        "action": weak_action,
+        "stress_flavor": stress_flavor,
+        "breakeven": be,
         **base_meta,
     })
     out.append({
@@ -171,8 +187,8 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     dxy_break = dxy is not None and dxy < 96 and cftc_down >= 60
     out.append({"id":"dxy_positioning_break","side":"CONFIRM","status":"TRIGGERED" if dxy_break else "NOT_TRIGGERED","condition":"DXY <96 and CFTC USD-downside pressure >=60","action":"Treat dollar weakness as positioning-confirmed rather than spot noise."})
 
-    repo_break = (sofr_iorb is not None and sofr_iorb > 0.10) or swaps >= 1000
-    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":"TRIGGERED" if repo_break else "NOT_TRIGGERED","condition":"Median SOFR-IORB >10bp or Fed foreign-central-bank swaps >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity until plumbing normalizes."})
+    repo_break = (sofr_iorb is not None and sofr_iorb > 0.10) or swaps >= 1000 or fima >= 1000
+    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":"TRIGGERED" if repo_break else "NOT_TRIGGERED","condition":"Median SOFR-IORB >10bp OR central-bank liquidity swaps >=$1B OR FIMA foreign-official repo >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity until plumbing normalizes.","central_bank_swaps_mn":swaps,"fima_repo_mn":fima})
 
     tail_confirm = bool(sofr99_iorb is not None and sofr99_iorb >= 0.10 and ((sofr99_pct or 0)>=95 or (sofr99_z or 0)>=2.0) and sofr99_recent10>=2)
     tail_watch = bool(sofr99_iorb is not None and sofr99_iorb >= 0.08 and ((sofr99_pct or 0)>=85 or (sofr99_z or 0)>=1.25))

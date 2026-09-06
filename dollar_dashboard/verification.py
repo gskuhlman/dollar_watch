@@ -9,7 +9,7 @@ import requests
 
 from .evidence import classify_source, fetch_source_text
 
-UA={"User-Agent":"dollar_watch/2.5 (+local research dashboard)"}
+UA={"User-Agent":"dollar_watch/2.6 (+local research dashboard)"}
 
 # Deterministic primary-source destinations. These do not assert that a claim is true;
 # they put the analyst at the authoritative evidence surface first.
