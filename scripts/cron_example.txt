@@ -1,0 +1,2 @@
+# Example: run at 7:00 AM Central every weekday (host timezone should be America/Chicago)
+0 7 * * 1-5 cd /path/to/dollar_crisis_dashboard && .venv/bin/python collector.py >> data/collector.log 2>&1

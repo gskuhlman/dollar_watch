@@ -1,0 +1,15 @@
+services:
+  dollar-dashboard:
+    build: .
+    container_name: dollar-crisis-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DOLLAR_DASHBOARD_DB=/app/data/dashboard.sqlite
+      # Optional. Or enter these in the app sidebar.
+      # - LMSTUDIO_BASE_URL=http://192.168.1.204:1234/v1
+      # - LMSTUDIO_MODEL=your-loaded-model-name
+      # - LMSTUDIO_API_KEY=lm-studio

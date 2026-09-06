@@ -1,0 +1,12 @@
+Example Windows Task Scheduler action (daily or weekly):
+
+Program/script:
+  C:\path\to\dollar_crisis_dashboard\.venv\Scripts\python.exe
+
+Add arguments:
+  collector.py
+
+Start in:
+  C:\path\to\dollar_crisis_dashboard
+
+The collector writes each run to data\dashboard.sqlite and prints the score/trade summary.
