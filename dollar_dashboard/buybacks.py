@@ -4,88 +4,305 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
-UA={"User-Agent":"dollar_watch/2.3 (+local research dashboard)"}
-REFUNDING_PAGE="https://home.treasury.gov/policy-issues/financing-the-government/quarterly-refunding/most-recent-quarterly-refunding-documents"
+UA = {"User-Agent": "dollar_watch/2.4 (+local research dashboard)"}
+BUYBACK_PAGE = "https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/"
+SCHEDULE_XML_URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
+RESULT_DIR = "https://www.treasurydirect.gov/instit/annceresult/press/preanre/{year}/"
 
 
-def _local(tag:str)->str:
-    return tag.split('}',1)[-1].lower()
+def _local(tag: str) -> str:
+    return tag.split("}", 1)[-1]
 
 
-def _text(el):
-    return (el.text or '').strip() if el is not None else ''
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", _local(name).lower())
 
 
-def _find_buyback_xml(html:str, base_url:str)->str|None:
-    # Prefer the anchor whose visible text explicitly says Buyback Schedule: XML Format.
-    pat=re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>\s*Buyback Schedule:\s*XML Format\s*</a>',re.I|re.S)
-    m=pat.search(html)
-    if m: return urljoin(base_url,m.group(1))
-    # Fallback: any XML-ish href near the words buyback schedule.
-    for m in re.finditer(r'href=["\']([^"\']+)["\']',html,re.I):
-        href=m.group(1)
-        window=html[max(0,m.start()-250):m.end()+250].lower()
-        if 'buyback' in window and ('xml' in href.lower() or 'xml' in window):
-            return urljoin(base_url,href)
-    return None
+def _money(v):
+    if v is None:
+        return None
+    s = re.sub(r"[^0-9.\-]", "", str(v))
+    return pd.to_numeric(s, errors="coerce")
 
 
-def fetch_buyback_schedule(timeout:int=25)->tuple[pd.DataFrame,dict]:
-    r=requests.get(REFUNDING_PAGE,headers=UA,timeout=timeout); r.raise_for_status()
-    xml_url=_find_buyback_xml(r.text,r.url)
-    if not xml_url:
-        raise ValueError('Could not locate Treasury Buyback Schedule XML link on most-recent-refunding page')
-    x=requests.get(xml_url,headers=UA,timeout=timeout); x.raise_for_status()
-    root=ET.fromstring(x.content)
-    records=[]
-    # Treasury XML format can evolve. Flatten leaf values for each repeated operation-like node.
-    candidates=[]
+def _first(rec: dict, aliases: list[str], default=None):
+    nr = {_norm(k): v for k, v in rec.items()}
+    for a in aliases:
+        k = _norm(a)
+        if k in nr and str(nr[k]).strip() not in {"", "None", "nan"}:
+            return nr[k]
+    return default
+
+
+def _leaf_record(el: ET.Element) -> dict:
+    rec = {}
+    for c in el.iter():
+        if len(list(c)) == 0:
+            txt = (c.text or "").strip()
+            if txt:
+                rec[_local(c.tag)] = txt
+    return rec
+
+
+def _candidate_records(root: ET.Element) -> list[dict]:
+    """Find repeated operation-like records without depending on one Treasury XML schema."""
+    out, seen = [], set()
     for el in root.iter():
-        leaves=[c for c in list(el) if len(list(c))==0]
-        names={_local(c.tag) for c in leaves}
-        if len(leaves)>=3 and any('date' in n for n in names) and any(('amount' in n or 'maximum' in n or 'sector' in n or 'bucket' in n) for n in names):
-            candidates.append(el)
-    # choose smallest operation records; remove ancestors by using the common deepest-ish candidates
-    seen=set()
-    for el in candidates:
-        rec={}
-        for c in list(el):
-            if len(list(c))==0:
-                rec[_local(c.tag)]=_text(c)
-        key=tuple(sorted(rec.items()))
-        if key in seen: continue
-        seen.add(key); records.append(rec)
-    df=pd.DataFrame(records)
-    meta={"source_url":xml_url,"retrieved_at":datetime.now(timezone.utc).isoformat(),"operations":len(df)}
-    if df.empty:
-        return df,meta
-    # Best-effort normalized fields without discarding raw columns.
-    def first(cols):
-        for c in cols:
-            if c in df.columns: return df[c]
-        return pd.Series([None]*len(df),index=df.index)
-    out=df.copy()
-    out['operation_date']=pd.to_datetime(first(['operationdate','operation_date','date']),errors='coerce')
-    out['maturity_sector']=first(['maturitysector','maturity_sector','bucket','sector'])
-    out['operation_type']=first(['operationtype','operation_type','type'])
-    amt=first(['maximumparamount','maximum_par_amount','maximumamount','maximum_amount','purchaseamount','purchase_amount'])
-    out['max_amount']=pd.to_numeric(amt.astype(str).str.replace(r'[$,]','',regex=True),errors='coerce')
-    return out,meta
+        rec = _leaf_record(el)
+        keys = {_norm(k) for k in rec}
+        has_date = any(k in keys for k in {"operationdate", "operationstartdtm", "operationstartdatetime", "operationstartdate"})
+        has_bucket = any(k in keys for k in {"maturitybucket", "maturitysector", "maturitydaterange", "operationtype"})
+        has_amount = any("amount" in k or "par" in k for k in keys)
+        if has_date and (has_bucket or has_amount) and len(rec) >= 3:
+            ident = tuple(sorted(rec.items()))
+            if ident not in seen:
+                seen.add(ident)
+                out.append(rec)
+    # Prefer smaller, row-like records over ancestors that contain many duplicate child fields.
+    if not out:
+        return []
+    sizes = [len(x) for x in out]
+    cutoff = max(8, min(sizes) + 12)
+    compact = [x for x in out if len(x) <= cutoff]
+    return compact or out
 
 
-def summarize_buybacks(df:pd.DataFrame, meta:dict)->dict:
+def _to_et_datetime(v) -> pd.Timestamp | pd.NaT:
+    if v is None or str(v).strip() == "":
+        return pd.NaT
+    s = str(v).strip()
+    ts = pd.to_datetime(s, errors="coerce", utc=True)
+    if pd.notna(ts):
+        return ts
+    # Treasury schedule strings can omit an offset while documenting Eastern Time.
+    ts = pd.to_datetime(s, errors="coerce")
+    if pd.isna(ts):
+        return pd.NaT
+    try:
+        if ts.tzinfo is None:
+            py = ts.to_pydatetime().replace(tzinfo=ZoneInfo("America/New_York"))
+            return pd.Timestamp(py).tz_convert("UTC")
+        return pd.Timestamp(ts).tz_convert("UTC")
+    except Exception:
+        return pd.NaT
+
+
+def _normalize_schedule_record(rec: dict) -> dict:
+    start = _first(rec, ["operationStartDtm", "operationStartDatetime", "operationStartDateTime", "operationStart"])
+    op_date = _first(rec, ["operationDate", "operationDt"])
+    start_ts = _to_et_datetime(start)
+    op_ts = _to_et_datetime(op_date)
+    if pd.isna(op_ts) and pd.notna(start_ts):
+        op_ts = start_ts.normalize()
+    return {
+        "operation_date": op_ts,
+        "operation_start": start_ts,
+        "settlement_date": _to_et_datetime(_first(rec, ["settlementDate", "settlementDt"])),
+        "operation_type": _first(rec, ["operationType", "buybackType", "type"], ""),
+        "security_type": _first(rec, ["securityType"], ""),
+        "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maximumParAmount", "maxParAmount", "maximumAmount"])),
+        "operation_status": _first(rec, ["operationStatus"], "SCHEDULED"),
+        "announcement_type": _first(rec, ["announcementType"], ""),
+        "source_kind": "SCHEDULE",
+    }
+
+
+def fetch_tentative_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
+    r = requests.get(SCHEDULE_XML_URL, headers=UA, timeout=timeout)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    rows = [_normalize_schedule_record(x) for x in _candidate_records(root)]
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.dropna(subset=["operation_date"], how="all").drop_duplicates(
+            subset=["operation_date", "operation_start", "maturity_bucket", "operation_type"], keep="last"
+        ).sort_values(["operation_date", "operation_start"], na_position="last")
+    return df, {
+        "schedule_source_url": SCHEDULE_XML_URL,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "schedule_operations": int(len(df)),
+    }
+
+
+def _result_url_from_start(start_ts) -> str | None:
+    ts = pd.to_datetime(start_ts, errors="coerce", utc=True)
+    if pd.isna(ts):
+        return None
+    stamp = ts.strftime("%Y%m%d%H%M%S")
+    return urljoin(RESULT_DIR.format(year=ts.year), f"BBR_{stamp}.xml")
+
+
+def _discover_result_links(timeout: int = 20) -> list[str]:
+    """Fallback for TreasuryDirect page changes: collect any result XML links exposed in page HTML."""
+    try:
+        r = requests.get(BUYBACK_PAGE, headers=UA, timeout=timeout)
+        r.raise_for_status()
+    except Exception:
+        return []
+    links = []
+    for href in re.findall(r'href=["\']([^"\']+)["\']', r.text, re.I):
+        full = urljoin(r.url, href)
+        if re.search(r"/BBR_\d{14}\.xml(?:$|\?)", full, re.I):
+            links.append(full.split("?", 1)[0])
+        elif re.search(r"/BBR_\d{14}\.pdf(?:$|\?)", full, re.I):
+            links.append(re.sub(r"\.pdf(?:\?.*)?$", ".xml", full, flags=re.I))
+    return sorted(set(links))
+
+
+def _normalize_result_xml(content: bytes, source_url: str) -> dict:
+    root = ET.fromstring(content)
+    rec = _leaf_record(root)
+    op = _to_et_datetime(_first(rec, ["operationDate", "operationDt"]))
+    start = _to_et_datetime(_first(rec, ["operationStartDtm", "operationStartDatetime", "operationStartDateTime"]))
+    if pd.isna(op) and pd.notna(start):
+        op = start.normalize()
+    return {
+        "operation_date": op,
+        "operation_start": start,
+        "settlement_date": _to_et_datetime(_first(rec, ["settlementDate", "settlementDt"])),
+        "operation_type": _first(rec, ["operationType", "buybackType"], ""),
+        "security_type": _first(rec, ["securityType"], ""),
+        "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maximumParAmount", "maxParAmount"])),
+        "total_offered": _money(_first(rec, ["totalParAmountOffered", "totalAmountOffered"])),
+        "total_accepted": _money(_first(rec, ["totalParAmountAccepted", "totalAmountAccepted"])),
+        "issues_eligible": pd.to_numeric(_first(rec, ["noIssueEligible", "numberIssuesEligible", "numberOfIssuesEligible"]), errors="coerce"),
+        "issues_accepted": pd.to_numeric(_first(rec, ["noIssuesAccepted", "numberIssuesAccepted", "numberOfIssuesAccepted"]), errors="coerce"),
+        "operation_status": _first(rec, ["operationStatus"], "Results"),
+        "announcement_type": _first(rec, ["announcementType"], ""),
+        "result_url": source_url,
+        "source_kind": "RESULT",
+    }
+
+
+def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_days: int = 180, max_operations: int = 40) -> tuple[pd.DataFrame, dict]:
+    now = pd.Timestamp.now(tz="UTC")
+    urls = []
+    if schedule is not None and not schedule.empty:
+        s = schedule.copy()
+        s["operation_date"] = pd.to_datetime(s["operation_date"], errors="coerce", utc=True)
+        s = s[(s["operation_date"] <= now) & (s["operation_date"] >= now - pd.Timedelta(days=lookback_days))]
+        for _, row in s.tail(max_operations).iterrows():
+            u = _result_url_from_start(row.get("operation_start"))
+            if u:
+                urls.append(u)
+    # Page discovery catches schedule schemas that do not expose a parseable operation start time.
+    urls.extend(_discover_result_links(timeout=min(timeout, 20)))
+    urls = list(dict.fromkeys(urls))[-max_operations:]
+
+    rows, failures = [], []
+    for u in urls:
+        try:
+            r = requests.get(u, headers=UA, timeout=timeout)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            rows.append(_normalize_result_xml(r.content, u))
+        except Exception as exc:
+            failures.append({"url": u, "error": str(exc)})
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.dropna(subset=["operation_date"], how="all").drop_duplicates(subset=["result_url"], keep="last")
+        df["offer_accept_ratio"] = pd.to_numeric(df["total_offered"], errors="coerce") / pd.to_numeric(df["total_accepted"], errors="coerce").replace(0, pd.NA)
+        df = df.sort_values("operation_date")
+    return df, {"result_urls_attempted": len(urls), "result_operations": int(len(df)), "result_failures": failures[:10]}
+
+
+def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
+    """V2.4 buyback collector.
+
+    The official tentative schedule and completed TreasuryDirect result XMLs are separate evidence
+    surfaces. A result-XML failure does not erase a successfully retrieved schedule, and a schedule
+    is never treated as evidence that a buyback was actually executed.
+    """
+    schedule, meta = fetch_tentative_schedule(timeout=timeout)
+    try:
+        results, rmeta = fetch_buyback_results(schedule, timeout=min(timeout, 20))
+    except Exception as exc:
+        results, rmeta = pd.DataFrame(), {"result_operations": 0, "result_error": str(exc)}
+    meta.update(rmeta)
+
+    # Merge result fields onto scheduled operations when possible, but retain completed orphan
+    # result rows if the current quarterly schedule no longer contains an older operation.
+    if schedule.empty:
+        merged = results.copy()
+    else:
+        merged = schedule.copy()
+        if not results.empty:
+            key = ["operation_date"]
+            rcols = ["operation_date", "total_offered", "total_accepted", "issues_eligible", "issues_accepted", "offer_accept_ratio", "result_url"]
+            rsmall = results[[c for c in rcols if c in results.columns]].drop_duplicates("operation_date", keep="last")
+            merged = merged.merge(rsmall, on="operation_date", how="outer", suffixes=("", "_result"))
+            merged["has_result"] = merged.get("result_url").notna()
+        else:
+            merged["has_result"] = False
+    if not merged.empty:
+        merged["operation_date"] = pd.to_datetime(merged["operation_date"], errors="coerce", utc=True)
+        merged = merged.sort_values("operation_date")
+    return merged, meta
+
+
+def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
+    now = pd.Timestamp.now(tz="UTC")
     if df is None or df.empty:
-        return {**meta,"scheduled_operations":0,"long_end_operations":0,"long_end_max_amount":0.0,"intensity":0.0}
-    sector=df.get('maturity_sector',pd.Series('',index=df.index)).astype(str).str.lower()
-    long_mask=sector.str.contains('10')|sector.str.contains('20')|sector.str.contains('30')|sector.str.contains('long')
-    long_df=df[long_mask]
-    total_amt=float(pd.to_numeric(df.get('max_amount'),errors='coerce').fillna(0).sum()) if 'max_amount' in df else 0.0
-    long_amt=float(pd.to_numeric(long_df.get('max_amount'),errors='coerce').fillna(0).sum()) if 'max_amount' in long_df else 0.0
-    intensity=0.0
-    if len(long_df): intensity=min(100.0,20.0+8.0*len(long_df))
-    if total_amt>0 and long_amt/total_amt>0.35: intensity=min(100.0,intensity+15.0)
-    return {**meta,"scheduled_operations":int(len(df)),"long_end_operations":int(len(long_df)),"total_max_amount":total_amt,"long_end_max_amount":long_amt,"intensity":round(intensity,1)}
+        return {
+            **meta,
+            "scheduled_operations": 0,
+            "completed_operations": 0,
+            "long_end_operations": 0,
+            "long_end_max_amount": 0.0,
+            "intensity": 0.0,
+            "results_available": False,
+        }
+    work = df.copy()
+    work["operation_date"] = pd.to_datetime(work.get("operation_date"), errors="coerce", utc=True)
+    sector = work.get("maturity_bucket", pd.Series("", index=work.index)).astype(str).str.lower()
+    long_mask = sector.str.contains(r"10|20|30|long", regex=True, na=False)
+    upcoming = work[work["operation_date"] > now]
+    completed = work[work.get("has_result", pd.Series(False, index=work.index)).fillna(False).astype(bool)]
+    long_upcoming = upcoming[long_mask.reindex(upcoming.index, fill_value=False)]
+    long_completed = completed[long_mask.reindex(completed.index, fill_value=False)]
+
+    max_amount = pd.to_numeric(work.get("max_amount"), errors="coerce") if "max_amount" in work else pd.Series(dtype=float)
+    total_max = float(max_amount.fillna(0).sum()) if len(max_amount) else 0.0
+    long_max = float(pd.to_numeric(long_upcoming.get("max_amount"), errors="coerce").fillna(0).sum()) if not long_upcoming.empty and "max_amount" in long_upcoming else 0.0
+
+    offered = float(pd.to_numeric(completed.get("total_offered"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_offered" in completed else 0.0
+    accepted = float(pd.to_numeric(completed.get("total_accepted"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_accepted" in completed else 0.0
+    offer_accept = (offered / accepted) if accepted > 0 else None
+
+    # Policy-response intensity measures announced/used capacity, not market stress or QE.
+    intensity = 0.0
+    if len(long_upcoming):
+        intensity += min(35.0, 8.0 * len(long_upcoming))
+    if long_max >= 4_000_000_000:
+        intensity += 15.0
+    if not long_completed.empty:
+        intensity += min(25.0, 5.0 * len(long_completed))
+    intensity = min(100.0, intensity)
+
+    latest_completed = None
+    if not completed.empty:
+        latest_completed = completed["operation_date"].max()
+    return {
+        **meta,
+        "scheduled_operations": int(len(upcoming)),
+        "completed_operations": int(len(completed)),
+        "long_end_operations": int(len(long_upcoming)),
+        "long_end_completed_operations": int(len(long_completed)),
+        "total_max_amount": total_max,
+        "long_end_max_amount": long_max,
+        "completed_total_offered": offered,
+        "completed_total_accepted": accepted,
+        "completed_offer_accept_ratio": None if offer_accept is None else round(offer_accept, 3),
+        "latest_completed_operation": None if latest_completed is None else latest_completed.isoformat(),
+        "results_available": bool(len(completed)),
+        "intensity": round(intensity, 1),
+        "interpretation": "Treasury debt-management/liquidity-support activity. Not QE and not proof of failed auction demand.",
+    }

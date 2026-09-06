@@ -10,7 +10,7 @@ import streamlit as st
 from dollar_dashboard.pipeline import collect_live_bundle
 from dollar_dashboard.news import classify_news
 from dollar_dashboard.scoring import DEFAULT_OVERRIDES, score
-from dollar_dashboard.portfolio import recommend, scenario_stress_test, ASSETS
+from dollar_dashboard.portfolio import recommend, scenario_stress_test, scenario_hedge_alignment, ASSETS
 from dollar_dashboard.storage import (
     save_snapshot, save_snapshot_if_new, recent_snapshots, get_overrides, set_override, get_setting, set_setting,
     add_event, recent_events, save_alerts, recent_alerts,
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V2.3", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V2.4", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -69,7 +69,16 @@ def build_verification_queue(news_df: pd.DataFrame, max_rows: int = 30) -> pd.Da
     q["preferred_verification_source"] = q["bucket"].astype(str).map(lambda b: PRIMARY_SOURCE_HINTS.get(b, "primary government/central-bank source if available"))
     q["verification_status"] = "UNVERIFIED"
     q["primary_source_candidates"] = q.apply(lambda r: "; ".join(x["url"] for x in primary_source_candidates(str(r.get("bucket","")),str(r.get("claim","")))),axis=1)
-    cols = [c for c in ["priority","bucket","claim","source","published","source_tier","preferred_verification_source","verification_status","primary_source_candidates","link"] if c in q.columns]
+    # Queue integrity: reject partial/truncated records rather than feeding fragments to the verifier/LLM.
+    required = ["bucket","claim","source","link"]
+    mask = pd.Series(True,index=q.index)
+    for c in required:
+        mask &= q[c].notna() & q[c].astype(str).str.strip().ne("")
+    mask &= q["link"].astype(str).str.startswith(("http://","https://"))
+    mask &= q["claim"].astype(str).str.len().ge(10)
+    q=q[mask].copy()
+    q["integrity_status"]="COMPLETE"
+    cols = [c for c in ["priority","bucket","claim","source","published","source_tier","preferred_verification_source","verification_status","integrity_status","primary_source_candidates","link"] if c in q.columns]
     return q.sort_values(["priority","published"],ascending=[True,False],na_position="last")[cols]
 
 
@@ -106,7 +115,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.3")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.4")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -164,11 +173,14 @@ meta_cols[1].metric("Market confirmation",f"{scores['confirmation_index']:.0f}/1
 meta_cols[2].metric("Data-quality confidence",f"{scores['confidence']:.0f}/100")
 meta_cols[3].metric("Phase",scores["phase"])
 st.info("**Interpretation:** regime values are absolute 0–100 risk indices. Evidence coverage is separate: a low risk score with low coverage means uncertainty, not proof of safety.")
-coverage_df=pd.DataFrame({"Regime":list(scores.get("regime_evidence_coverage",{})),"Evidence coverage %":list(scores.get("regime_evidence_coverage",{}).values())})
+cov_details=scores.get("regime_evidence_coverage_details",{})
+coverage_df=pd.DataFrame([{"Regime":k,"Effective coverage %":v.get("effective"),"Critical coverage %":v.get("critical"),"Generic coverage %":v.get("generic")} for k,v in cov_details.items()])
+if coverage_df.empty:
+    coverage_df=pd.DataFrame({"Regime":list(scores.get("regime_evidence_coverage",{})),"Effective coverage %":list(scores.get("regime_evidence_coverage",{}).values())})
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.3 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.4 Roadmap"
 ])
 
 with exec_tab:
@@ -208,9 +220,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V2.3 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V2.4 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.3 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.4 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -234,11 +246,16 @@ with market_tab:
         if plumbing_rows:
             st.write("**Repo / liquidity internals**")
             st.dataframe(fred.loc[plumbing_rows].round(3),width="stretch")
-        fed_asset_rows=[x for x in ["Fed balance sheet (millions)","Fed Treasury holdings (millions)","Fed MBS holdings (millions)","Fed liquidity-facility loans (millions)","Central bank liquidity swaps (millions)","Fed identified assets (millions)","Fed other assets residual (millions)"] if x in fred.index]
+        fed_asset_rows=[x for x in ["Fed balance sheet (millions)","Fed Treasury holdings (millions)","Fed Treasury bills (millions)","Fed Treasury nominal notes/bonds (millions)","Fed Treasury TIPS principal (millions)","Fed MBS holdings (millions)","Fed liquidity-facility loans (millions)","Central bank liquidity swaps (millions)","Fed identified assets (millions)","Fed other assets residual (millions)"] if x in fred.index]
         if fed_asset_rows:
             st.write("**Fed H.4.1 asset decomposition**")
             st.dataframe(fred.loc[fed_asset_rows].round(1),width="stretch")
             st.caption("The residual is deliberate: it prevents unexplained WALCL changes from being mislabeled as QE. Treasury, MBS, lending and swap changes are shown separately.")
+        fed_class=bundle.get("fed_treasury_classification",{})
+        if fed_class:
+            st.write("**Fed Treasury-holdings classification**")
+            st.info(f"{fed_class.get('classification','UNKNOWN')} — {fed_class.get('interpretation','')} (data-classification confidence {fed_class.get('confidence',0):.0f}%)")
+            st.json(fed_class)
         st.write("**Rates / inflation / term premium**")
         rate_rows=[x for x in ["2Y Treasury","10Y Treasury","30Y Treasury","5Y TIPS real yield","10Y TIPS real yield","10Y breakeven inflation","5Y5Y forward inflation","10Y term premium","Financial Conditions Index"] if x in fred.index]
         if rate_rows: st.dataframe(fred.loc[rate_rows].round(3),width="stretch")
@@ -256,10 +273,17 @@ with market_tab:
     st.subheader("Treasury buyback monitoring")
     bm=bundle.get("buyback_meta",{})
     if bm:
-        bc=st.columns(4); bc[0].metric("Scheduled operations",bm.get("scheduled_operations",0)); bc[1].metric("Long-end operations",bm.get("long_end_operations",0)); bc[2].metric("Long-end max",fmt_money(bm.get("long_end_max_amount",0))); bc[3].metric("Response intensity",f"{bm.get('intensity',0):.0f}/100")
-        st.caption("Buyback intensity is a policy/liquidity-support signal, not proof of weak auction demand. Source: official Treasury quarterly buyback schedule.")
+        bc=st.columns(6)
+        bc[0].metric("Upcoming ops",bm.get("scheduled_operations",0))
+        bc[1].metric("Completed results",bm.get("completed_operations",0))
+        bc[2].metric("Long-end upcoming",bm.get("long_end_operations",0))
+        bc[3].metric("Long-end max",fmt_money(bm.get("long_end_max_amount",0)))
+        bc[4].metric("Offer / accept",("—" if bm.get("completed_offer_accept_ratio") is None else f"{bm.get('completed_offer_accept_ratio'):.2f}x"))
+        bc[5].metric("Policy intensity",f"{bm.get('intensity',0):.0f}/100")
+        st.caption("TreasuryDirect schedule and completed result XMLs are separate. Announced capacity, submitted offers and accepted amounts are shown distinctly. This is debt-management/liquidity-support evidence, not QE or automatic auction-rescue evidence.")
+        if not bm.get("results_available",False): st.warning("Buyback schedule is available but completed result XML coverage is unavailable/empty; accepted/offered activity is unknown, not zero.")
         if not bundle.get("buybacks",pd.DataFrame()).empty: st.dataframe(bundle["buybacks"],width="stretch",hide_index=True)
-    else: st.warning("Treasury buyback schedule unavailable; treat as missing policy evidence.")
+    else: st.warning("Treasury buyback monitoring unavailable; treat as missing policy evidence.")
 
     st.subheader("Treasury fiscal pipeline")
     fm=bundle.get("fiscal_meta",{})
@@ -319,7 +343,7 @@ with flows_tab:
 
 with policy_tab:
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V2.3 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V2.4 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -439,6 +463,9 @@ with portfolio_tab:
     s2=scenario_stress_test(rec_alloc,portfolio_value).rename(columns={"Illustrative portfolio return %":"Recommended return %","Illustrative P/L $":"Recommended P/L $"})
     stress=s1.merge(s2,on="Scenario"); stress["Improvement % pts"]=stress["Recommended return %"]-stress["Current return %"]
     st.dataframe(stress,width="stretch",hide_index=True)
+    st.subheader("Scenario hedge alignment — replaces misleading '% defensive' labels")
+    align=scenario_hedge_alignment(base_alloc,portfolio_value)
+    if not align.empty: st.dataframe(align,width="stretch",hide_index=True)
 
 with analysis_tab:
     st.subheader("Deterministic analysis")
@@ -452,9 +479,13 @@ with analysis_tab:
     td=pd.DataFrame(machine_triggers)
     st.dataframe(td,width="stretch",hide_index=True)
     triggered=td[td["status"]=="TRIGGERED"] if not td.empty else pd.DataFrame()
-    if triggered.empty: st.info("No machine pre-commitment is currently triggered.")
+    aging=td[td["status"].isin(["AGING","PENDING_REPLACEMENT","EXPIRED"])] if not td.empty else pd.DataFrame()
+    if triggered.empty: st.info("No fresh machine pre-commitment is currently triggered.")
     else:
         for _,t in triggered.iterrows(): st.warning(f"{t['side']} — {t['condition']} → {t['action']}")
+    if not aging.empty:
+        st.caption("Event-based evidence with reduced/expired weight:")
+        for _,t in aging.iterrows(): st.write(f"{t['id']}: **{t['status']}** — {t.get('condition','')}")
 
     st.subheader("Local LLM red-team")
     st.caption("The model is told that regime scores are not probabilities, stale data are already discounted, and unverified claims cannot support trades.")
@@ -506,7 +537,7 @@ with health_tab:
     st.subheader("Raw → confidence → effective input")
     if not cad.empty: st.dataframe(cad,width="stretch",hide_index=True)
     st.markdown("""
-### V2.3 evidence rules
+### V2.4 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.

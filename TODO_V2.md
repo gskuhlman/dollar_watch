@@ -3,6 +3,21 @@
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
 
 
+## V2.4 — Completed from third red-team review
+
+- [x] Rebuild Treasury buyback monitoring around official TreasuryDirect schedule/results evidence; separate announced capacity, offered par and accepted par.
+- [x] Treat partial buyback coverage as partial/missing evidence rather than a benign zero.
+- [x] Add Fed Treasury bill / nominal note-bond / TIPS composition series and classify bill-heavy accumulation separately from QE/fiscal-rescue claims.
+- [x] Add aging, replacement and expiration states to auction-based machine triggers.
+- [x] Prevent stale clean-auction KILL evidence from staying fully active immediately before replacement auctions.
+- [x] Add Generic / Critical / Effective regime evidence coverage; missing verified policy intent now materially lowers managed-devaluation coverage.
+- [x] Add scenario hedge-alignment reporting instead of a misleading single “percent defensive” label.
+- [x] Label pre-lineage snapshots `LEGACY_BASELINE` and suppress false taxonomy comparisons.
+- [x] Reject incomplete verification-queue rows before analysis.
+- [x] Replace raw serialized-payload truncation with record-safe LLM payload compaction.
+- [x] Add V2.4 regression tests for buybacks, Fed composition classification, trigger aging, critical coverage, scenario alignment, legacy lineage and JSON-safe LLM compaction.
+
+
 ## V2.3 — Completed from second red-team review
 
 - [x] Rebuild Treasury auction ingestion without brittle `fields=` requests; normalize legacy/current FiscalData field aliases locally.

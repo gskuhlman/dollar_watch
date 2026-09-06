@@ -14,18 +14,22 @@ PRIMARY_ADAPTERS={
     'Treasury / Bessent':[
         ('Treasury press releases','https://home.treasury.gov/news/press-releases'),
         ('Treasury financing','https://home.treasury.gov/policy-issues/financing-the-government'),
+        ('TreasuryDirect buyback results','https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/'),
     ],
     'Fed / Warsh':[
         ('Federal Reserve speeches','https://www.federalreserve.gov/newsevents/speeches.htm'),
         ('Federal Reserve H.4.1','https://www.federalreserve.gov/releases/h41/'),
+        ('Fed Monetary Policy Report','https://www.federalreserve.gov/monetarypolicy/mpr_default.htm'),
     ],
     'Funding stress':[
         ('NY Fed markets','https://www.newyorkfed.org/markets'),
         ('Federal Reserve H.4.1','https://www.federalreserve.gov/releases/h41/'),
+        ('Fed Monetary Policy Report','https://www.federalreserve.gov/monetarypolicy/mpr_default.htm'),
     ],
     'Central-bank gold':[
         ('World Gold Council CB data','https://www.gold.org/goldhub/data/gold-reserves-by-country'),
         ('DNB gold reserves','https://www.dnb.nl/en/'),
+        ('DNB newsroom','https://www.dnb.nl/en/general-news/'),
     ],
     'BRICS / de-dollarization':[
         ('BRICS official','https://brics.br/'),

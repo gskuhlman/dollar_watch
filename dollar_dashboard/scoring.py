@@ -335,22 +335,43 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "Treasury buyback monitoring": {"raw": round(buyback_intensity,1), "confidence": round(buyback_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_conf),1)},
     }
 
-    # Evidence coverage is separate from risk. A low managed-devaluation score with poor
-    # verified policy coverage means UNKNOWN/LOW-COVERAGE, not proof that policy intent is absent.
-    verified_policy_items = [a for a in override_audit.values() if a.get("effective",0) != 0]
-    policy_cov = min(100.0, 20.0 + 12.0*len(verified_policy_items) + 20.0*news_conf)
-    regime_coverage = {
-        "Managed dollar devaluation": round(_clamp(0.35*market_conf*100 + 0.15*cftc_conf*100 + 0.50*policy_cov),1),
-        "Fiscal / Treasury supply stress": round(_clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.10*buyback_conf*100),1),
-        "Inflation / monetary debasement": round(_clamp(0.55*fred_conf*100 + 0.25*market_conf*100 + 0.20*policy_cov),1),
-        "Dollar funding squeeze": round(_clamp(0.80*fred_conf*100 + 0.20*market_conf*100),1),
-        "Reserve-confidence crisis": round(_clamp(0.22*market_conf*100 + 0.20*fred_conf*100 + 0.22*tic_conf*100 + 0.18*cofer_conf*100 + 0.10*stable_conf*100 + 0.08*policy_cov),1),
-        "FX positioning squeeze": round(_clamp(0.72*cftc_conf*100 + 0.28*market_conf*100),1),
+    # Evidence coverage is separate from risk. V2.4 distinguishes broad/generic coverage from
+    # CRITICAL coverage. Plenty of market data cannot substitute for missing verified policy intent
+    # in the managed-devaluation regime, and lots of spot data cannot substitute for stale reserve data.
+    def _verified(keys):
+        vals=[]
+        for k in keys:
+            a=override_audit.get(k,{})
+            vals.append(100.0 if a.get("verification_status")=="VERIFIED" and a.get("source_tier") not in {"","UNSOURCED"} else 0.0)
+        return sum(vals)/len(vals) if vals else 0.0
+
+    policy_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
+    reserve_policy_critical=_verified(["foreign_official_selling","brics_payment_progress","central_bank_gold_rotation","commodity_dedollarization"])
+    generic_coverage = {
+        "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_conf*100 + 0.20*news_conf*100),
+        "Fiscal / Treasury supply stress": _clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.10*buyback_conf*100),
+        "Inflation / monetary debasement": _clamp(0.62*fred_conf*100 + 0.28*market_conf*100 + 0.10*news_conf*100),
+        "Dollar funding squeeze": _clamp(0.80*fred_conf*100 + 0.20*market_conf*100),
+        "Reserve-confidence crisis": _clamp(0.22*market_conf*100 + 0.20*fred_conf*100 + 0.22*tic_conf*100 + 0.18*cofer_conf*100 + 0.10*stable_conf*100 + 0.08*news_conf*100),
+        "FX positioning squeeze": _clamp(0.72*cftc_conf*100 + 0.28*market_conf*100),
     }
+    critical_coverage = {
+        "Managed dollar devaluation": policy_critical,
+        "Fiscal / Treasury supply stress": _clamp(0.40*auction_conf*100 + 0.35*fiscal_conf*100 + 0.25*fred_conf*100),
+        "Inflation / monetary debasement": _clamp(0.75*fred_conf*100 + 0.25*market_conf*100),
+        "Dollar funding squeeze": _clamp(0.90*fred_conf*100 + 0.10*market_conf*100),
+        "Reserve-confidence crisis": _clamp(0.30*tic_conf*100 + 0.25*cofer_conf*100 + 0.20*fred_conf*100 + 0.15*reserve_policy_critical + 0.10*market_conf*100),
+        "FX positioning squeeze": _clamp(0.78*cftc_conf*100 + 0.22*market_conf*100),
+    }
+    # Critical coverage gets half the weight. Thus a fully populated market tape with zero verified
+    # devaluation-policy evidence cannot masquerade as ~70% coverage of policy intent.
+    regime_coverage = {k: round(_clamp(0.50*generic_coverage[k] + 0.50*critical_coverage[k]),1) for k in generic_coverage}
+    regime_coverage_details={k:{"effective":regime_coverage[k],"generic":round(generic_coverage[k],1),"critical":round(critical_coverage[k],1)} for k in regime_coverage}
 
     return {
         "regimes": regimes,
         "regime_evidence_coverage": regime_coverage,
+        "regime_evidence_coverage_details": regime_coverage_details,
         "regime_mix_not_probability": mix,
         "components": {
             "Policy intent / intervention": round(policy_intent, 1),
@@ -365,6 +386,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             "Treasury buyback policy-response intensity": round(_eff(buyback_intensity,buyback_conf),1),
         },
         "confidence_adjustments": confidence_audit,
+        "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
         "verified_override_audit": override_audit,
         "early_warning_index": round(early_warning, 1),
         "confirmation_index": round(confirmation, 1),

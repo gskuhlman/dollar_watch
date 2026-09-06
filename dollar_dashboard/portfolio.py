@@ -293,3 +293,37 @@ def scenario_stress_test(allocation: dict[str, float], portfolio_value: float = 
         ret = sum(weights[a] * shocks[a] for a in ASSETS)
         rows.append({"Scenario": scenario, "Illustrative portfolio return %": round(ret, 1), "Illustrative P/L $": round(portfolio_value * ret / 100.0, 0)})
     return pd.DataFrame(rows)
+
+
+def scenario_hedge_alignment(allocation: dict[str, float], portfolio_value: float = 100000.0) -> pd.DataFrame:
+    """Translate illustrative scenario stress results into an easier-to-read hedge alignment view.
+
+    This replaces misleading labels such as '90% defensive'. Assets hedge different regimes in
+    different directions, especially during a dollar-funding squeeze.
+    """
+    stress = scenario_stress_test(allocation, portfolio_value)
+    if stress.empty:
+        return stress
+    rows=[]
+    for _,r in stress.iterrows():
+        ret=float(r["Illustrative portfolio return %"])
+        if ret >= 5:
+            alignment="STRONG"
+        elif ret >= 1:
+            alignment="POSITIVE"
+        elif ret > -3:
+            alignment="MIXED / LIMITED"
+        elif ret > -8:
+            alignment="VULNERABLE"
+        else:
+            alignment="HIGHLY VULNERABLE"
+        # 50 = approximately neutral; capped for readability, not a probability.
+        score=max(0.0,min(100.0,50.0+4.0*ret))
+        rows.append({
+            "Scenario":r["Scenario"],
+            "Hedge alignment":alignment,
+            "Alignment index (not probability)":round(score,1),
+            "Illustrative return %":ret,
+            "Illustrative P/L $":r["Illustrative P/L $"],
+        })
+    return pd.DataFrame(rows)

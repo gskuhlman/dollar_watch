@@ -19,6 +19,7 @@ from .intelligence import (
 from .fiscal import fetch_fiscal_pipeline
 from .news import fetch_news
 from .buybacks import fetch_buyback_schedule, summarize_buybacks
+from .fed_policy import classify_fed_treasury_change
 
 
 
@@ -59,9 +60,10 @@ def collect_live_bundle() -> dict[str, Any]:
     try:
         fred_hist, fred_summary = fetch_fred_bundle()
         bundle["fred_hist"] = fred_hist; bundle["fred_summary"] = fred_summary
-        status["FRED rates / funding"] = {"ok": not fred_summary.empty, "weight": 1.5, "last_date": _last_index(fred_hist), "notes": "Rates, inflation, repo spreads, funding and foreign custody"}
+        bundle["fed_treasury_classification"] = classify_fed_treasury_change(_index_dict(fred_summary))
+        status["FRED rates / funding"] = {"ok": not fred_summary.empty, "weight": 1.5, "last_date": _last_index(fred_hist), "notes": "Rates, inflation, repo spreads, funding, foreign custody, and H.4.1 Treasury maturity composition"}
     except Exception as e:
-        bundle["fred_hist"] = pd.DataFrame(); bundle["fred_summary"] = pd.DataFrame()
+        bundle["fred_hist"] = pd.DataFrame(); bundle["fred_summary"] = pd.DataFrame(); bundle["fed_treasury_classification"] = {"classification":"INSUFFICIENT_DATA","confidence":0.0}
         status["FRED rates / funding"] = {"ok": False, "weight": 1.5, "error": str(e)}
 
     try:
@@ -97,13 +99,15 @@ def collect_live_bundle() -> dict[str, Any]:
         buybacks, buyback_source = fetch_buyback_schedule()
         buyback_meta = summarize_buybacks(buybacks, buyback_source)
         bundle["buybacks"] = buybacks; bundle["buyback_meta"] = buyback_meta
-        status["Treasury buyback schedule"] = {
-            "ok": True, "weight": 0.65, "last_date": pd.Timestamp.now(tz="UTC"),
-            "notes": f"Official Treasury quarterly buyback schedule; long-end operations={buyback_meta.get('long_end_operations',0)}",
+        status["Treasury buybacks"] = {
+            "ok": not buybacks.empty, "weight": 0.75, "last_date": pd.Timestamp.now(tz="UTC"),
+            "notes": (f"Official TreasuryDirect schedule + completed result XMLs; "
+                      f"scheduled={buyback_meta.get('scheduled_operations',0)}, completed-results={buyback_meta.get('completed_operations',0)}, "
+                      f"long-end scheduled={buyback_meta.get('long_end_operations',0)}"),
         }
     except Exception as e:
         bundle["buybacks"] = pd.DataFrame(); bundle["buyback_meta"] = {}
-        status["Treasury buyback schedule"] = {"ok": False, "weight": 0.65, "error": str(e), "notes": "Buybacks are policy/liquidity-support evidence; failure is unknown, not zero activity"}
+        status["Treasury buybacks"] = {"ok": False, "weight": 0.75, "error": str(e), "notes": "Buybacks are policy/liquidity-support evidence; failure is unknown, not zero activity"}
 
     try:
         cftc = fetch_cftc_tff()
@@ -185,7 +189,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "cofer": source_confidence.get("IMF COFER", 0.0),
         "fiscal": source_confidence.get("Treasury fiscal flows", 0.0),
         "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
-        "buyback": source_confidence.get("Treasury buyback schedule", 0.0),
+        "buyback": source_confidence.get("Treasury buybacks", 0.0),
         "news": source_confidence.get("News discovery", 0.0),
     }
 
@@ -212,6 +216,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "stablecoin_meta": bundle.get("stable_meta", {}),
         "treasury_buyback_meta": bundle.get("buyback_meta", {}),
         "treasury_buybacks": _records(bundle.get("buybacks", pd.DataFrame())),
+        "fed_treasury_classification": bundle.get("fed_treasury_classification", {}),
         "data_confidence": float(confidence),
         "source_confidence": source_confidence,
         "component_confidence": component_confidence,

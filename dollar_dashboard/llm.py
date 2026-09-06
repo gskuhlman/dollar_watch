@@ -32,8 +32,43 @@ def compact_previous_context(prev: dict | None, current_snapshot: dict, current_
         "regime_delta_to_current": regime_delta,
         "current_timestamp": current_snapshot.get("timestamp"),
         "current_regime_evidence_coverage": current_scores.get("regime_evidence_coverage",{}),
+        "current_regime_evidence_coverage_details": current_scores.get("regime_evidence_coverage_details",{}),
         "treasury_buyback_meta": current_snapshot.get("treasury_buyback_meta",{}),
+        "fed_treasury_classification": current_snapshot.get("fed_treasury_classification",{}),
     }
+
+
+
+def _compact_analysis_payload(payload: dict, max_chars: int = 60000) -> str:
+    """Serialize the red-team payload without ever cutting JSON in the middle of a record."""
+    import copy
+    data=copy.deepcopy(payload)
+    caps={
+        "verified_analyst_evidence":20,
+        "unverified_evidence_discovery_only":15,
+        "verification_queue_discovery_only":15,
+        "headlines_discovery_only":20,
+    }
+    for k,n in caps.items():
+        if isinstance(data.get(k),list): data[k]=data[k][:n]
+    snap=data.get("snapshot")
+    if isinstance(snap,dict):
+        for k,n in {"auction_summary":10,"upcoming_auctions":12,"cftc_summary":8,"tic_summary":12,"stablecoin_summary":12,"treasury_buybacks":16,"data_health":20}.items():
+            if isinstance(snap.get(k),list): snap[k]=snap[k][:n]
+    raw=json.dumps(data,default=str)
+    if len(raw)<=max_chars: return raw
+    # Remove low-priority discovery material in whole-record units; never slice serialized JSON.
+    for k in ["headlines_discovery_only","unverified_evidence_discovery_only","verification_queue_discovery_only"]:
+        if k in data:
+            data[k]=[]
+            raw=json.dumps(data,default=str)
+            if len(raw)<=max_chars: return raw
+    # Final structured compaction: preserve causal summaries, current scores, triggers and portfolio.
+    if isinstance(data.get("snapshot"),dict):
+        keep={"timestamp","market_summary","fred_summary","auction_stress_auto","auction_summary","upcoming_auctions","cftc_usd_downside_pressure","cftc_summary","fx_positioning_squeeze_risk","tic_dedollarization_pressure","tic_meta","cofer_dedollarization_pressure","cofer_meta","fiscal_flow_stress_auto","fiscal_meta","stablecoin_dollar_support_auto","stablecoin_meta","treasury_buyback_meta","fed_treasury_classification","data_confidence","component_confidence"}
+        data["snapshot"]={k:v for k,v in data["snapshot"].items() if k in keep}
+    raw=json.dumps(data,default=str)
+    return raw
 
 def analyze_with_local_llm(
     payload: dict,
@@ -68,7 +103,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.3.
+    system = """You are the red-team macro analyst for dollar_watch V2.4.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -82,8 +117,11 @@ Evidence rules are strict:
 - If you introduce a factual claim not present in the supplied verified evidence, label it UNVERIFIED and exclude it from the recommendation.
 - Explicitly discount stale components using confidence_adjustments.
 - Regime scores are 0-100 risk indices, NOT probabilities. regime_mix_not_probability is descriptive only.
-- regime_evidence_coverage is separate from risk: low risk + low coverage means uncertainty, not safety.
-- Treasury buybacks are liquidity/policy-response evidence, not by themselves proof of weak demand or QE.
+- regime_evidence_coverage is separate from risk: low risk + low coverage means uncertainty, not safety. Critical coverage is more important than generic coverage; missing verified policy evidence cannot be replaced by abundant spot-market data.
+- Treasury buybacks are debt-management/liquidity-support evidence, not by themselves proof of weak demand or QE. Distinguish announced capacity, offers submitted, and amounts accepted.
+- Use the supplied Fed Treasury-holdings classification. Bill accumulation with MBS runoff is not automatic QE or fiscal-rescue evidence.
+- Event-based auction triggers age and expire. PENDING_REPLACEMENT, AGING, and EXPIRED are not equivalent to a fresh TRIGGERED signal.
+- Do not describe a portfolio as a single percent defensive/hedged. Use scenario hedge alignment because the same asset can hedge devaluation and fail in a dollar-funding squeeze.
 - If previous_run is supplied, use it for true run-to-run comparisons; do not infer "what changed" solely from 1w/1m/3m market fields.
 - A 2Y Treasury yield above current SOFR is a carry/rate-path signal, NOT by itself proof that the market prices hikes; term/risk premia also matter.
 - Tokenized Treasury/RWA products (for example accumulating-NAV structures) are not automatically $1-pegged stablecoins. Use the supplied asset classification.
@@ -96,7 +134,7 @@ Economic interests are not proof of motive. Do not fabricate facts beyond suppli
 Give concrete portfolio implications, but respect the hard engine's minimum trade size and anti-chasing rules.
 For each recommendation, state the machine/human evidence that would reverse it.
 """
-    user = "Analyze this dashboard snapshot. Return sections: Evidence Quality, What Changed, Causal Interpretation, Red-Team Case, Missing Factors, Portfolio Actions, Reversal Triggers, Unverified Claims To Check.\n\n" + json.dumps(payload, default=str)[:50000]
+    user = "Analyze this dashboard snapshot. Return sections: Evidence Quality, What Changed, Causal Interpretation, Red-Team Case, Missing Factors, Portfolio Actions, Reversal Triggers, Unverified Claims To Check.\n\n" + _compact_analysis_payload(payload)
     r = requests.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

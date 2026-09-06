@@ -1,33 +1,27 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V2.3
+# dollar_watch — Dollar Crisis Early Warning Dashboard V2.4
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## V2.3 evidence-integrity release
+## V2.4 reliability / evidence-integrity release
 
-V2.3 focuses on whether the dashboard can distinguish *unknown* from *benign* and whether run-to-run analysis is comparing the correct observations.
+V2.4 focuses on the remaining interpretation problems exposed by the V2.3 red-team run. The goal is not to add more headline indicators; it is to make existing evidence harder to misread.
 
-### New in V2.3
+### New in V2.4
 
-- Completed Treasury auction results are isolated from the future auction calendar. Future issue/settlement placeholders cannot affect historical auction stress or freshness.
-- Every distinct collected-data timestamp receives one automatic run-lineage record with `run_id`, `parent_run_id`, `app_version`, `schema_version`, and `run_kind`. Streamlit reruns with the same collected snapshot are deduplicated.
-- Run comparisons distinguish model/data-source changes from ordinary market/source updates and expose the classification to the LLM.
-- Every regime now has a separate **Evidence Coverage** score. Low risk + low coverage means uncertainty, not safety.
-- Treasury buyback monitoring reads the official quarterly refunding buyback schedule and tracks long-end operation intensity. Buybacks are treated as policy/liquidity-support evidence, not proof of failed demand or QE.
-- The headline verification queue now attaches deterministic primary-source candidates (Treasury, Fed, NY Fed, Japan MOF/BoJ, PBOC/SAFE, RBI/BRICS, etc.) before evidence can be promoted.
-- The red-team prompt explicitly receives evidence coverage, buyback context, and run metadata.
+- **TreasuryDirect buybacks rebuilt.** The collector uses the official tentative schedule XML and attempts completed result XMLs separately. Announced capacity, total offers and accepted par are distinct fields; result failure is missing evidence, never zero activity.
+- **Fed Treasury purchase taxonomy.** H.4.1 Treasury bills, nominal notes/bonds, TIPS and MBS are collected separately. Bill accumulation with MBS runoff is classified as a composition change consistent with reserve-management/reinvestment mechanics, not automatically QE or fiscal rescue.
+- **Trigger aging / replacement.** Auction-based CONFIRM/KILL signals move through FRESH, AGING, PENDING_REPLACEMENT and EXPIRED states. Old August auctions cannot remain a full-strength KILL immediately before new September auctions.
+- **Critical-source evidence coverage.** Every regime now reports Generic, Critical and Effective coverage. Managed-devaluation coverage is penalized sharply when verified policy evidence is missing even if market data are abundant.
+- **Scenario hedge alignment.** The UI no longer encourages a single “% defensive” interpretation. It shows how the portfolio behaves separately under devaluation, fiscal stress, debasement, dollar squeeze, reserve crisis and FX squeeze scenarios.
+- **Legacy lineage handling.** Snapshots that predate reliable app/schema metadata are explicitly marked `LEGACY_BASELINE` and are not treated as clean taxonomy-to-taxonomy comparisons.
+- **Verification queue integrity.** Partial/truncated discovery rows are rejected. The local-LLM payload is compacted by whole records and is never raw-string sliced mid-JSON.
+- **Primary-source adapters expanded** for TreasuryDirect buybacks, Fed H.4.1/Monetary Policy Report, and central-bank verification surfaces.
 
 ### Run-history behavior
 
-The interactive app automatically saves one `AUTO_STREAMLIT` record per unique live-data timestamp. Manual saves are labeled `MANUAL`; the headless collector uses `SCHEDULED_COLLECTOR`. This prevents UI reruns from looking like market observations.
+The interactive app automatically saves one `AUTO_STREAMLIT` record per unique live-data timestamp. Manual saves are `MANUAL`; the headless collector uses `SCHEDULED_COLLECTOR`. Legacy records are labeled rather than silently pretending they belong to the current schema.
 
-
-## Why V2.3 exists
-
-The V2.1 red-team run showed that the architecture was substantially better, but it also found two correctness defects and several decision-quality gaps: Treasury auction ingestion failed with HTTP 400 because the collector requested brittle/incorrect field names; yield-bearing tokenized Treasury products such as USDY/USYC could be misread as $1 stablecoins; source dates could appear ahead of the dashboard clock; the LLM did not receive a true previous snapshot; and portfolio explanations were still boilerplate.
-
-V2.3 fixes those issues without changing the six-regime framework.
-
-## V2.3 risk regimes
+## V2.4 risk regimes
 
 Each is an independent **0–100 risk index, not a probability**:
 
@@ -40,7 +34,7 @@ Each is an independent **0–100 risk index, not a probability**:
 
 The dashboard also reports **Early Warning**, **Market Confirmation**, **Data Confidence**, and a normalized **regime mix explicitly labeled NOT A PROBABILITY**.
 
-## Major V2.3 changes
+## Earlier V2.2/V2.1 foundations retained
 
 ### Correctness / data plumbing
 
@@ -130,7 +124,7 @@ Open `http://<docker-host>:8501`. SQLite data persist in `./data`.
 python collector.py
 ```
 
-The V2.3 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
+The V2.4 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
 
 ```text
 DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
@@ -154,16 +148,18 @@ A mathematical drift below the action floor is shown as **HOLD**, not as a fake 
 ```bash
 python test_engine.py
 python test_v2.py
+python test_v23.py
+python test_v24.py
 ```
 
-The V2.3 tests cover TIC parsing, CFTC positioning, FX squeeze detection, auction-schema normalization, transactional-stablecoin vs tokenized-RWA classification, future-source-date hygiene, prior-run LLM context deltas, source-verification gates, freshness-before-scoring, fiscal-flow parsing, COFER period freshness, machine triggers, six-regime scoring, evidence-based portfolio rationale, minimum trade/position constraints and six scenario stress tests.
+The V2.4 tests cover TIC parsing, CFTC positioning, FX squeeze detection, auction-schema normalization, transactional-stablecoin vs tokenized-RWA classification, future-source-date hygiene, prior-run LLM context deltas, source-verification gates, freshness-before-scoring, fiscal-flow parsing, COFER period freshness, machine triggers, six-regime scoring, evidence-based portfolio rationale, minimum trade/position constraints and six scenario stress tests.
 
 ## Important limitations
 
 - Auction absorption is now restored from official FiscalData, but **true auction tails** still require a dependable live when-issued yield source; bid-to-cover/bidder mix are not the same as a tail.
 - FX option risk reversals, cross-currency basis and deep Treasury order-book data are still high-priority institutional-data additions.
 - `check_source_url()` validates reachability and source class only; it does **not** prove a claim is true. High-impact facts must still be verified against the source before they are marked VERIFIED.
-- TIC and COFER are lagged by design; V2.3 discounts that lag rather than pretending the data are current.
+- TIC and COFER are lagged by design; V2.4 discounts that lag rather than pretending the data are current.
 - Stress-test returns are explicit scenario assumptions, not forecasts.
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 

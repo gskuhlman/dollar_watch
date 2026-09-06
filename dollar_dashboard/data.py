@@ -13,7 +13,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.3 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.4 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -49,6 +49,9 @@ FRED_SERIES = {
     "TGCR 99th percentile": "TGCR99THPERCENTILE",
     "Fed balance sheet (millions)": "WALCL",
     "Fed Treasury holdings (millions)": "TREAST",
+    "Fed Treasury bills (millions)": "WSHOBL",
+    "Fed Treasury nominal notes/bonds (millions)": "WSHONBNL",
+    "Fed Treasury TIPS principal (millions)": "WSHONBIIL",
     "Fed MBS holdings (millions)": "WSHOMCB",
     "Fed liquidity-facility loans (millions)": "WLCFLL",
     "ON RRP (billions)": "RRPONTSYD",
@@ -195,7 +198,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.3 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.4 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -295,7 +298,7 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
     """Fetch official Treasury auction results without a brittle fields= query.
 
-    FiscalData returns the full auction schema; V2.3 normalizes legacy/current aliases locally.
+    FiscalData returns the full auction schema; V2.4 normalizes legacy/current aliases locally.
     This prevents a single renamed or misspelled API field from turning the auction channel off.
     """
     params = {

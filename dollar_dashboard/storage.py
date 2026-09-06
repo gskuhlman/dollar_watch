@@ -131,7 +131,16 @@ def recent_snapshots(limit: int = 50) -> list[dict]:
     rows = con.execute("SELECT id,captured_at,payload,run_id,parent_run_id,app_version,schema_version,run_kind FROM snapshots ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     con.close(); out=[]
     for rid,captured,payload,run_id,parent_run_id,app_version,schema_version,run_kind in rows:
-        d=json.loads(payload); d["_id"]=rid; d["_captured_at"]=captured; d["_run_id"]=run_id; d["_parent_run_id"]=parent_run_id; d["_app_version"]=app_version; d["_schema_version"]=schema_version; d["_run_kind"]=run_kind; out.append(d)
+        d=json.loads(payload)
+        legacy = not bool(run_id and app_version and schema_version)
+        d["_id"]=rid; d["_captured_at"]=captured
+        d["_run_id"]=run_id or f"legacy-{rid}"
+        d["_parent_run_id"]=parent_run_id
+        d["_app_version"]=app_version or "LEGACY"
+        d["_schema_version"]=schema_version or "LEGACY"
+        d["_run_kind"]="LEGACY_BASELINE" if legacy else (run_kind or "ANALYSIS")
+        d["_legacy_lineage"]=legacy
+        out.append(d)
     return out
 
 
