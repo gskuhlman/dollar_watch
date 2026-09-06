@@ -11,7 +11,9 @@
     "Broad commodities / energy": 0.0
   },
   "alert_threshold_points": 8,
-  "allocation_change_threshold_pct": 3.0,
+  "allocation_change_threshold_pct": 1.0,
+  "min_position_pct": 2.0,
+  "min_trade_dollars": 1000,
   "max_turnover_pct": 25.0,
-  "version": "2.0"
+  "version": "2.1"
 }

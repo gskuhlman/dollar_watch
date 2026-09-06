@@ -19,9 +19,14 @@ REGIME_TARGETS = {
         "Developed ex-US equities (unhedged)": 24, "US real-asset / value equities": 14,
         "Broad commodities / energy": 7, "CHF / defensive FX": 5, "Bitcoin": 4,
     },
-    "Fiscal / inflation crisis": {
-        "T-bills / cash equivalents": 16, "TIPS": 24, "Gold": 20,
-        "Developed ex-US equities (unhedged)": 9, "US real-asset / value equities": 12,
+    "Fiscal / Treasury supply stress": {
+        "T-bills / cash equivalents": 28, "TIPS": 18, "Gold": 12,
+        "Developed ex-US equities (unhedged)": 12, "US real-asset / value equities": 12,
+        "Broad commodities / energy": 5, "CHF / defensive FX": 8, "Bitcoin": 5,
+    },
+    "Inflation / monetary debasement": {
+        "T-bills / cash equivalents": 14, "TIPS": 25, "Gold": 20,
+        "Developed ex-US equities (unhedged)": 10, "US real-asset / value equities": 12,
         "Broad commodities / energy": 10, "CHF / defensive FX": 5, "Bitcoin": 4,
     },
     "Dollar funding squeeze": {
@@ -34,16 +39,25 @@ REGIME_TARGETS = {
         "Developed ex-US equities (unhedged)": 19, "US real-asset / value equities": 9,
         "Broad commodities / energy": 10, "CHF / defensive FX": 9, "Bitcoin": 3,
     },
+    "FX positioning squeeze": {
+        "T-bills / cash equivalents": 32, "TIPS": 18, "Gold": 12,
+        "Developed ex-US equities (unhedged)": 12, "US real-asset / value equities": 10,
+        "Broad commodities / energy": 4, "CHF / defensive FX": 8, "Bitcoin": 4,
+    },
 }
 
-# Illustrative one-year-equivalent stress shocks, not forecasts. Used to compare allocations consistently.
 SCENARIO_SHOCKS = {
     "Managed dollar devaluation": {
         "T-bills / cash equivalents": 3, "TIPS": 6, "Gold": 12,
         "Developed ex-US equities (unhedged)": 11, "US real-asset / value equities": 8,
         "Broad commodities / energy": 9, "CHF / defensive FX": 8, "Bitcoin": 12,
     },
-    "Fiscal / inflation crisis": {
+    "Fiscal / Treasury supply stress": {
+        "T-bills / cash equivalents": 4, "TIPS": -2, "Gold": 5,
+        "Developed ex-US equities (unhedged)": -5, "US real-asset / value equities": -4,
+        "Broad commodities / energy": 1, "CHF / defensive FX": 4, "Bitcoin": -5,
+    },
+    "Inflation / monetary debasement": {
         "T-bills / cash equivalents": 2, "TIPS": 7, "Gold": 16,
         "Developed ex-US equities (unhedged)": -4, "US real-asset / value equities": 2,
         "Broad commodities / energy": 13, "CHF / defensive FX": 5, "Bitcoin": 4,
@@ -58,6 +72,11 @@ SCENARIO_SHOCKS = {
         "Developed ex-US equities (unhedged)": 9, "US real-asset / value equities": -12,
         "Broad commodities / energy": 12, "CHF / defensive FX": 16, "Bitcoin": 8,
     },
+    "FX positioning squeeze": {
+        "T-bills / cash equivalents": 3, "TIPS": 2, "Gold": 4,
+        "Developed ex-US equities (unhedged)": 5, "US real-asset / value equities": -2,
+        "Broad commodities / energy": 1, "CHF / defensive FX": 8, "Bitcoin": -2,
+    },
 }
 
 PROXY = {
@@ -71,14 +90,14 @@ PROXY = {
 }
 
 REVERSAL_TRIGGERS = {
-    "T-bills / cash equivalents": "Reduce the defensive cash overweight if funding stress falls and higher-risk regimes retreat below WATCH.",
-    "TIPS": "Reduce if inflation expectations and fiscal term premium fall materially while real yields remain attractive in nominal bonds.",
-    "Gold": "Reduce if reserve/fiscal stress falls, real yields rise without credibility stress, and gold loses relative momentum.",
-    "Developed ex-US equities (unhedged)": "Reduce if the dollar strengthens structurally or foreign growth/market risk deteriorates faster than U.S. risk.",
-    "US real-asset / value equities": "Reduce if recession/funding stress dominates inflation and pricing-power benefits.",
+    "T-bills / cash equivalents": "Reduce defensive cash only after repo/funding conditions are benign and fiscal/reserve regimes retreat.",
+    "TIPS": "Reduce if breakevens fall, term premium normalizes, and fiscal/inflation regimes retreat.",
+    "Gold": "Reduce if reserve/fiscal stress falls, DXY strengthens, central-bank demand cools, and gold loses relative momentum.",
+    "Developed ex-US equities (unhedged)": "Reduce if the dollar strengthens structurally or foreign growth deteriorates faster than U.S. risk.",
+    "US real-asset / value equities": "Reduce if recession/funding stress dominates inflation/pricing-power benefits.",
     "Broad commodities / energy": "Reduce if inflation expectations fall, global demand weakens, or a dollar squeeze becomes dominant.",
-    "CHF / defensive FX": "Reduce if dollar confidence improves and Swiss policy actively suppresses CHF appreciation.",
-    "Bitcoin": "Reduce if liquidity/funding stress dominates or crypto begins behaving primarily as a high-beta risk asset.",
+    "CHF / defensive FX": "Reduce if dollar confidence improves or Swiss policy actively suppresses CHF appreciation.",
+    "Bitcoin": "Reduce if liquidity stress dominates or BTC again behaves as high-beta risk while gold performs as the monetary hedge.",
 }
 
 
@@ -115,16 +134,28 @@ def _apply_chase_limiter(base: dict[str, float], rec: dict[str, float], market_s
         if factor < 1.0:
             adjusted[asset] = base[asset] + delta * factor
             notes.append(f"Capped {asset} buy because its proxy has already risen {r*100:.1f}% over the monitored window.")
-    # Send unallocated residual to short T-bills rather than forcing a chase into another risk hedge.
-    residual = 100.0 - sum(adjusted.values())
-    adjusted["T-bills / cash equivalents"] += residual
+    adjusted["T-bills / cash equivalents"] += 100.0 - sum(adjusted.values())
     return adjusted, notes
+
+
+def _remove_token_positions(base: dict[str,float], rec: dict[str,float], min_position_pct: float) -> tuple[dict[str,float], list[str]]:
+    notes=[]; out=rec.copy()
+    for a in ASSETS:
+        if a == "T-bills / cash equivalents":
+            continue
+        # Do not initiate a de-minimis position. Existing meaningful positions may drift below the threshold.
+        if base[a] < min_position_pct and out[a] < min_position_pct:
+            if out[a] > 0.01:
+                notes.append(f"Suppressed token {a} target of {out[a]:.1f}% (<{min_position_pct:.1f}% minimum position).")
+            out[a]=0.0
+    out["T-bills / cash equivalents"] += 100.0-sum(out.values())
+    return out, notes
 
 
 def recommend(
     regime_scores: dict[str, float], baseline: dict[str, float], portfolio_value: float,
     min_trade_pct: float = 2.0, market_summary: dict | None = None, confidence: float = 100.0,
-    max_turnover_pct: float = 25.0,
+    max_turnover_pct: float = 25.0, min_position_pct: float = 2.0, min_trade_dollars: float = 1000.0,
 ) -> tuple[pd.DataFrame, dict]:
     base = {a: float(baseline.get(a, 0)) for a in ASSETS}
     total_base = sum(base.values())
@@ -132,10 +163,11 @@ def recommend(
         raise ValueError("Baseline allocation must be greater than zero")
     base = {k: 100.0 * v / total_base for k, v in base.items()}
 
-    raw = {r: max(0.0, (float(s) - 35.0) / 65.0) for r, s in regime_scores.items()}
+    # Scores are risk indices, not probabilities. Only risk above 35 creates an overlay.
+    raw = {r: max(0.0, (float(s) - 35.0) / 65.0) for r, s in regime_scores.items() if r in REGIME_TARGETS}
     total_raw = sum(raw.values())
     confidence_scale = max(0.35, min(1.0, float(confidence) / 100.0))
-    overlay = min(0.75, 0.25 * total_raw) * confidence_scale
+    overlay = min(0.75, 0.22 * total_raw) * confidence_scale
     weights = {r: (v / total_raw if total_raw else 0.0) for r, v in raw.items()}
 
     crisis_target = {a: 0.0 for a in ASSETS}
@@ -144,15 +176,12 @@ def recommend(
         for a in ASSETS:
             crisis_target[a] += w * target[a]
 
-    rec = {}
-    for a in ASSETS:
-        rec[a] = (1 - overlay) * base[a] + overlay * crisis_target[a] if total_raw else base[a]
-    scale = 100.0 / sum(rec.values())
-    rec = {k: v * scale for k, v in rec.items()}
-
+    rec = {a: ((1-overlay)*base[a] + overlay*crisis_target[a]) if total_raw else base[a] for a in ASSETS}
+    rec = {k: v * 100.0 / sum(rec.values()) for k, v in rec.items()}
     rec, chase_notes = _apply_chase_limiter(base, rec, market_summary)
+    rec, token_notes = _remove_token_positions(base, rec, min_position_pct)
+    chase_notes.extend(token_notes)
 
-    # Cap one-way turnover to avoid large mechanical reallocations from one dashboard run.
     deltas = {a: rec[a] - base[a] for a in ASSETS}
     one_way_turnover = sum(abs(v) for v in deltas.values()) / 2.0
     if one_way_turnover > max_turnover_pct and one_way_turnover > 0:
@@ -161,13 +190,27 @@ def recommend(
         one_way_turnover = max_turnover_pct
         chase_notes.append(f"Scaled all trades to the {max_turnover_pct:.1f}% one-way turnover limit.")
 
+    # Make small mathematical changes non-actionable by freezing them at the current allocation.
+    actionable_pct = max(float(min_trade_pct), 100.0 * float(min_trade_dollars) / max(float(portfolio_value), 1.0))
+    frozen = rec.copy()
+    for a in ASSETS:
+        if a == "T-bills / cash equivalents":
+            continue
+        if abs(frozen[a] - base[a]) < actionable_pct:
+            frozen[a] = base[a]
+    frozen["T-bills / cash equivalents"] += 100.0 - sum(frozen.values())
+    rec = frozen
+
+    deltas = {a: rec[a] - base[a] for a in ASSETS}
+    one_way_turnover = sum(abs(v) for v in deltas.values()) / 2.0
     dominant = max(regime_scores.items(), key=lambda kv: kv[1])[0]
     rows = []
     for a in ASSETS:
         delta = rec[a] - base[a]
-        if delta >= min_trade_pct:
+        trade_dollars = portfolio_value * delta / 100.0
+        if delta >= actionable_pct and abs(trade_dollars) >= min_trade_dollars:
             action = "BUY"
-        elif delta <= -min_trade_pct:
+        elif delta <= -actionable_pct and abs(trade_dollars) >= min_trade_dollars:
             action = "REDUCE"
         else:
             action = "HOLD"
@@ -188,19 +231,22 @@ def recommend(
             "Change %": round(delta, 1),
             "Current $": round(portfolio_value * base[a] / 100, 0),
             "Recommended $": round(portfolio_value * rec[a] / 100, 0),
-            "Trade $": round(portfolio_value * delta / 100, 0),
+            "Trade $": round(trade_dollars, 0),
             "Action": action,
-            "Why": f"{role}; dominant modeled regime is {dominant}.",
+            "Why": f"{role}; highest absolute risk index is {dominant}.",
             "Reversal trigger": REVERSAL_TRIGGERS[a],
         })
     df = pd.DataFrame(rows)
     meta = {
         "overlay_strength": overlay,
-        "regime_weights": weights,
+        "regime_mix_not_probability": weights,
         "one_way_turnover_pct": one_way_turnover,
         "confidence_scale": confidence_scale,
         "chase_notes": chase_notes,
         "dominant_regime": dominant,
+        "actionable_threshold_pct": actionable_pct,
+        "minimum_position_pct": min_position_pct,
+        "minimum_trade_dollars": min_trade_dollars,
     }
     return df, meta
 
@@ -213,9 +259,5 @@ def scenario_stress_test(allocation: dict[str, float], portfolio_value: float = 
     rows = []
     for scenario, shocks in SCENARIO_SHOCKS.items():
         ret = sum(weights[a] * shocks[a] for a in ASSETS)
-        rows.append({
-            "Scenario": scenario,
-            "Illustrative portfolio return %": round(ret, 1),
-            "Illustrative P/L $": round(portfolio_value * ret / 100.0, 0),
-        })
+        rows.append({"Scenario": scenario, "Illustrative portfolio return %": round(ret, 1), "Illustrative P/L $": round(portfolio_value * ret / 100.0, 0)})
     return pd.DataFrame(rows)

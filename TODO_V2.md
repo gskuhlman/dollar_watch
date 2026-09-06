@@ -1,13 +1,34 @@
-# Dollar Crisis Dashboard — Prioritized Product Backlog
+# dollar_watch — Prioritized Product Backlog
 
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
+
+
+## V2.1 — Completed from first red-team review
+
+- [x] Split fiscal/Treasury supply stress from inflation/monetary debasement.
+- [x] Add a separate FX positioning-squeeze regime.
+- [x] Apply source freshness/confidence before an indicator enters regime math.
+- [x] Use actual IMF COFER observation-quarter freshness rather than retrieval time.
+- [x] Fix stablecoin depeg alert/display-universe inconsistency.
+- [x] Suppress token positions and enforce a minimum actionable dollar trade.
+- [x] Add machine-readable 10Y/30Y auction confirmation and reversal triggers.
+- [x] Add SOFR-IORB, SOFR99-IORB, TGCR-IORB and repo-dispersion signals.
+- [x] Fix FRED trend windows to use calendar time across daily/weekly/monthly series.
+- [x] Add Treasury Monthly Statement fiscal-flow parsing.
+- [x] Add IMF COFER reserve-share ingestion.
+- [x] Add Fed H.4.1 asset decomposition (Treasuries, MBS, lending, swaps, residual).
+- [x] Add source-credibility tiers, provenance, verification status and score gate.
+- [x] Prevent unverified AI/headline findings from changing hard policy scores.
+- [x] Add LLM-assisted claim-vs-cited-source checker; human verification remains mandatory.
+- [x] Add machine-evaluated confirmation/reversal conditions to alerts.
+- [x] Expand stress tests and portfolio targets from four to six regimes.
 
 ## P0 — Critical decision features
 
 These are required before treating the dashboard as a serious decision-support system.
 
 - [x] **Separate leading indicators from market confirmation.** Early Warning and Confirmation indexes are now distinct.
-- [x] **Four independent regimes.** Managed devaluation, fiscal/inflation crisis, dollar funding squeeze, reserve-confidence crisis.
+- [x] **Six independent regimes.** Managed devaluation, fiscal/Treasury supply stress, inflation/monetary debasement, dollar funding squeeze, reserve-confidence crisis, FX positioning squeeze.
 - [x] **CFTC FX positioning.** Leveraged-money and asset-manager positioning in major currency futures with historical percentile pressure.
 - [x] **Country-level TIC Treasury holdings.** China, Japan, foreign official holdings, major BRICS/Gulf holders, monthly changes and YoY direction.
 - [x] **Treasury auction absorption.** Bid-to-cover and primary/direct/indirect bidder mix versus prior same-tenor auctions.
@@ -18,7 +39,7 @@ These are required before treating the dashboard as a serious decision-support s
 - [x] **Anti-chasing guardrail.** Large recent moves in gold, Bitcoin, foreign equities, CHF or commodities cap new buys.
 - [x] **Portfolio turnover guardrail.** Maximum one-run turnover prevents a single model change from forcing an all-in repositioning.
 - [x] **Hard recommendations with reversal triggers.** BUY/HOLD/REDUCE, dollar trade amount, reason and explicit condition that would reverse the trade.
-- [x] **Scenario stress testing.** Current vs recommended portfolio under all four modeled regimes.
+- [x] **Scenario stress testing.** Current vs recommended portfolio under all six modeled regimes.
 - [x] **Policy/foreign-actor evidence journal.** Manual events retain actor, source, impact and notes for auditability.
 - [x] **Change alerts.** Regime jumps, acute levels, phase changes, weak data confidence and large portfolio trades.
 - [x] **Headless collector.** Scheduled snapshots can run without Streamlit.
@@ -33,7 +54,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **True Treasury auction tails.** Capture when-issued yield immediately before auction versus stop-out yield. Requires a dependable intraday WI source.
 - [ ] **Treasury market-depth / bid-ask data.** Track order-book depth and price impact, especially 10Y/30Y.
 - [ ] **Repo fails and fails-to-deliver.** Add NY Fed primary-dealer Treasury settlement/fails data.
-- [ ] **SOFR distribution / repo dispersion.** Go beyond the headline SOFR print to identify collateral/funding stress.
+- [x] **SOFR distribution / repo dispersion baseline.** SOFR99-IORB, TGCR-IORB and TGCR dispersion are implemented; richer transaction-level repo detail remains P1.
 - [ ] **Cross-currency basis.** EUR/USD, JPY/USD and CHF/USD basis as direct dollar-funding-pressure gauges.
 - [ ] **FX options risk reversals.** 1W/1M/3M USD downside skew for EUR, JPY, CHF and broad dollar indexes.
 - [ ] **FX implied volatility term structure.** Detect demand for near-term crisis protection before spot moves.
@@ -51,7 +72,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **CIPS / alternative-payment usage metrics.** Transaction counts/value, geographic growth and interoperability milestones.
 - [ ] **SWIFT currency-share data.** Track actual payment usage by USD/EUR/CNY rather than announcements.
 - [ ] **Central-bank gold accumulation database.** Country-level monthly/quarterly changes with reserve share and valuation adjustment.
-- [ ] **IMF COFER reserve-share ingestion.** USD/EUR/CNY reserve shares with FX valuation adjustments.
+- [x] **IMF COFER USD reserve-share ingestion.** USD share and lag-aware confidence are implemented. [ ] Add fuller EUR/CNY decomposition and FX-valuation adjustment.
 - [ ] **Stablecoin Treasury-demand estimator.** Apply issuer-specific reserve composition instead of treating supply as a generic dollar-demand proxy.
 - [ ] **Stablecoin issuer concentration / redemption risk.** USDT, USDC, USD1 and others scored for reserve/custodian/peg concentration.
 - [ ] **Tokenized Treasury/RWA monitoring.** On-chain Treasury funds as another structural source of dollar demand.
@@ -61,8 +82,8 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **Foreign-policy actor profiles.** China PBOC/SAFE, BOJ/MOF, ECB, SNB, Saudi/UAE monetary authorities, BRICS institutions.
 - [ ] **Sanctions / reserve-freeze tracker.** New sanctions that increase incentives for reserve diversification.
 - [ ] **Geopolitical event severity model.** Taiwan, Middle East, Russia/Europe and cyber incidents scored by financial transmission channel.
-- [ ] **Automated source corroboration.** Require two independent or one primary source before a headline-driven policy score can become high-confidence evidence.
-- [ ] **Source credibility registry.** Primary document > wire service > major financial press > secondary commentary > social media.
+- [x] **Verification gate baseline.** Unverified/headline/AI findings cannot affect hard policy scores; verified sourced evidence can. [ ] Add automatic claim-content corroboration across primary/two independent sources.
+- [x] **Source credibility registry baseline.** Primary > major news > research > other; expand source catalog and domain-specific rules over time.
 - [ ] **Recommendation attribution.** Exact contribution of every signal to every percentage-point portfolio change.
 - [ ] **Tax-aware trading mode.** Optional capital-gain/tax-lot friction before recommending reallocations.
 - [ ] **Account-type constraints.** Taxable/IRA/401(k), no-crypto, no-physical-gold, ETF-only, Treasury-direct, etc.

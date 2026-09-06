@@ -4,7 +4,7 @@ import os
 import requests
 
 
-def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = None, score_delta_threshold: float = 8.0) -> list[dict]:
+def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = None, score_delta_threshold: float = 8.0, triggers: list[dict] | None = None) -> list[dict]:
     alerts: list[dict] = []
     prev_scores = (previous or {}).get("scores", {}) if previous else {}
     prev_regimes = prev_scores.get("regimes", {})
@@ -35,6 +35,15 @@ def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = 
 
     if current_scores.get("confidence", 100) < 60:
         alerts.append({"severity": "WATCH", "kind": "data_quality", "message": f"Data confidence is only {current_scores.get('confidence',0):.0f}/100; hard recommendations should be discounted."})
+
+    for t in triggers or []:
+        if t.get("status") == "TRIGGERED":
+            sev = "ACTION" if t.get("side") == "CONFIRM" else "WATCH"
+            alerts.append({
+                "severity": sev, "kind": "machine_trigger",
+                "message": f"{t.get('side','WATCH')} trigger {t.get('id')}: {t.get('condition')}. {t.get('action')}",
+                "trigger": t,
+            })
 
     if portfolio_df is not None and not portfolio_df.empty:
         trades = portfolio_df[portfolio_df["Action"] != "HOLD"]

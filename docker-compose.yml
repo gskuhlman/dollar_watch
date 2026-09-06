@@ -1,7 +1,7 @@
 services:
   dollar-dashboard:
     build: .
-    container_name: dollar-crisis-dashboard
+    container_name: dollar-watch
     restart: unless-stopped
     ports:
       - "8501:8501"
@@ -10,8 +10,9 @@ services:
     environment:
       - DOLLAR_DASHBOARD_DB=/app/data/dashboard.sqlite
       # Optional. Or enter these in the app sidebar.
-      # - LMSTUDIO_BASE_URL=http://192.168.1.204:1234/v1
-      # - LMSTUDIO_MODEL=your-loaded-model-name
-      # - LMSTUDIO_API_KEY=lm-studio
+      # - LOCAL_LLM_BASE_URL=http://host.docker.internal:11434/v1
+      # - LOCAL_LLM_MODEL=glm-5.3:cloud
+      # - LOCAL_LLM_API_KEY=ollama
+      # - LOCAL_LLM_TIMEOUT=300
       # Optional alert route (for example, an n8n webhook):
       # - DOLLAR_DASHBOARD_WEBHOOK=http://192.168.x.x:5678/webhook/dollar-dashboard

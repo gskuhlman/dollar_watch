@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "DollarCrisisDashboard/2.0 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.1 (+local research dashboard)"}
 
 CFTC_DATASET = "gpe5-46if"  # Traders in Financial Futures - futures only
 CFTC_ENDPOINTS = [
@@ -19,6 +19,10 @@ CFTC_ENDPOINTS = [
 TIC_MFH_URL = "https://ticdata.treasury.gov/resource-center/data-chart-center/tic/Documents/slt_table5.txt"
 STABLECOINS_URL = "https://stablecoins.llama.fi/stablecoins"
 STABLECOIN_CHART_URL = "https://stablecoins.llama.fi/stablecoincharts/all"
+IMF_COFER_URLS = [
+    "https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.STA/COFER/+/G001.AFXRA.CI_USD.SHRO_PT.Q",
+    "https://api.imf.org/external/sdmx/2.1/data/COFER/G001.AFXRA.CI_USD.SHRO_PT.Q",
+]
 
 CFTC_PATTERNS = {
     "Euro FX": ["EURO FX"],
@@ -344,12 +348,17 @@ def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.
     if pd.notna(r365) and r365 > 0.20:
         support += 12; reasons.append("Stablecoin supply up >20% YoY")
     # Peg instability reduces confidence in stablecoins as structural dollar support.
+    # Explicitly calculate the displayed max deviation from the SAME filtered universe used for alerts.
     prices = pd.to_numeric(usd["price"], errors="coerce")
     circ = pd.to_numeric(usd["circulating_usd"], errors="coerce").fillna(0)
-    depeg = (prices.sub(1).abs() > 0.01) & (circ > 1e9)
+    eligible = (circ > 1e9) & prices.notna()
+    deviations = prices[eligible].sub(1).abs()
+    max_depeg = float(deviations.max()) if not deviations.empty else 0.0
+    depeg = eligible & (prices.sub(1).abs() > 0.01)
+    depeg_symbols = usd.loc[depeg, "symbol"].astype(str).tolist() if depeg.any() else []
     if depeg.any():
         support -= min(15.0, 5.0 * int(depeg.sum()))
-        reasons.append("One or more >$1B USD stablecoins are >1% off peg")
+        reasons.append(f">$1B USD stablecoin depeg >1%: {', '.join(depeg_symbols)}")
     support = float(max(0, min(100, support)))
     usd1 = focus[focus["symbol"].astype(str).str.upper().eq("USD1")]
     meta = {
@@ -358,9 +367,133 @@ def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.
         "90d_growth": r90,
         "1y_growth": r365,
         "usd1_supply": None if usd1.empty else float(usd1.iloc[0]["circulating_usd"]),
+        "max_large_stablecoin_deviation_pct": 100.0 * max_depeg,
+        "large_depeg_symbols": depeg_symbols,
         "reasons": reasons,
     }
     return focus, meta, support
+
+
+
+def summarize_fx_positioning_squeeze(cftc_summary: pd.DataFrame) -> tuple[float, list[str]]:
+    """Detect crowded foreign-currency shorts that can create mechanical USD weakness on unwind.
+
+    Low leveraged-net percentiles in EUR/JPY/CHF imply unusually large shorts in those currencies.
+    This is classified separately from fundamental USD-downside conviction.
+    """
+    if cftc_summary is None or cftc_summary.empty:
+        return 0.0, []
+    parts = []
+    reasons = []
+    weights = {"Japanese Yen": 1.35, "Euro FX": 1.0, "Swiss Franc": 0.8}
+    for _, row in cftc_summary.iterrows():
+        market = str(row.get("market", ""))
+        if market not in weights:
+            continue
+        pct = _num(row.get("leveraged_3y_percentile"))
+        weekly = _num(row.get("leveraged_weekly_change"))
+        if pd.isna(pct):
+            continue
+        # 0th percentile = most crowded short in the sample.
+        crowded_short = max(0.0, min(100.0, 100.0 - pct))
+        if pct < 20:
+            reasons.append(f"{market} leveraged net at {pct:.0f}th percentile (crowded short)")
+        if pd.notna(weekly) and weekly < 0:
+            crowded_short = min(100.0, crowded_short + 5.0)
+        parts.append((crowded_short, weights[market]))
+    if not parts:
+        return 0.0, reasons
+    score = sum(v*w for v,w in parts) / sum(w for _,w in parts)
+    return float(max(0, min(100, score))), reasons
+
+
+def fetch_imf_cofer_usd_share(start: str = "2020") -> pd.DataFrame:
+    """Fetch IMF COFER world USD reserve share via current SDMX endpoints.
+
+    The IMF API has moved versions; try SDMX 3.0 then 2.1 and accept CSV/JSON variants.
+    Failure is isolated by the pipeline and never blocks the dashboard.
+    """
+    errors=[]
+    for url in IMF_COFER_URLS:
+        try:
+            params={"startPeriod": start}
+            headers={**UA, "Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/json"}
+            r=requests.get(url, params=params, headers=headers, timeout=25)
+            r.raise_for_status()
+            text=r.text.strip()
+            # CSV responses contain TIME_PERIOD and OBS_VALUE columns.
+            if text and ("," in text or ";" in text):
+                try:
+                    df=pd.read_csv(StringIO(text))
+                except Exception:
+                    df=pd.DataFrame()
+                if not df.empty:
+                    cols={c.upper():c for c in df.columns}
+                    tcol=cols.get("TIME_PERIOD") or cols.get("TIME_PERIOD_START")
+                    vcol=cols.get("OBS_VALUE") or cols.get("VALUE")
+                    if tcol and vcol:
+                        out=pd.DataFrame({"period":df[tcol].astype(str),"usd_share_pct":pd.to_numeric(df[vcol],errors="coerce")})
+                        return out.dropna().reset_index(drop=True)
+            # Try SDMX JSON common shape.
+            obj=r.json()
+            datasets=obj.get("data", obj).get("dataSets", []) if isinstance(obj,dict) else []
+            struct=obj.get("data", obj).get("structure", {}) if isinstance(obj,dict) else {}
+            if datasets:
+                obs=[]
+                # Generic flatten; periods may be supplied in structure observation values.
+                periods=[]
+                try:
+                    periods=[x.get("id") or x.get("name") for x in struct.get("dimensions",{}).get("observation",[])[0].get("values",[])]
+                except Exception:
+                    periods=[]
+                series=datasets[0].get("series",{})
+                for _,sv in series.items():
+                    for oi,ov in sv.get("observations",{}).items():
+                        val=ov[0] if isinstance(ov,list) else ov
+                        period=periods[int(oi)] if periods and str(oi).isdigit() and int(oi)<len(periods) else str(oi)
+                        obs.append({"period":period,"usd_share_pct":_num(val)})
+                out=pd.DataFrame(obs).dropna()
+                if not out.empty:
+                    return out
+        except Exception as exc:
+            errors.append(str(exc))
+    raise RuntimeError("IMF COFER unavailable: " + "; ".join(errors[-2:]))
+
+
+def summarize_cofer(df: pd.DataFrame) -> tuple[dict[str, Any], float]:
+    if df is None or df.empty:
+        return {}, 0.0
+    d=df.copy(); d["usd_share_pct"]=pd.to_numeric(d["usd_share_pct"],errors="coerce"); d=d.dropna(subset=["usd_share_pct"])
+    if d.empty: return {},0.0
+    last=float(d.iloc[-1]["usd_share_pct"])
+    q4=float(d.iloc[-5]["usd_share_pct"]) if len(d)>=5 else np.nan
+    change=np.nan if pd.isna(q4) else last-q4
+    pressure=15.0
+    reasons=[]
+    if not pd.isna(change):
+        if change < -1.0: pressure += 12; reasons.append("USD COFER share down >1pp over ~1y")
+        if change < -2.0: pressure += 12; reasons.append("USD COFER share down >2pp over ~1y")
+        if change > 1.0: pressure -= 8; reasons.append("USD COFER share up >1pp over ~1y")
+    if last < 55: pressure += 8
+    if last < 50: pressure += 12
+    meta={"latest_period":str(d.iloc[-1]["period"]),"usd_share_pct":last,"approx_1y_change_pp":None if pd.isna(change) else float(change),"reasons":reasons}
+    return meta,float(max(0,min(100,pressure)))
+
+def period_last_date(period: str | None):
+    """Convert common quarterly/monthly period labels to an observation-end timestamp."""
+    if not period:
+        return None
+    text=str(period).strip().upper()
+    try:
+        import re
+        m=re.search(r"(\d{4}).*?Q0?([1-4])", text)
+        if m:
+            year=int(m.group(1)); q=int(m.group(2)); month=q*3
+            return pd.Timestamp(year=year, month=month, day=1, tz="UTC") + pd.offsets.MonthEnd(0)
+        ts=pd.to_datetime(text, utc=True, errors="coerce")
+        return None if pd.isna(ts) else ts
+    except Exception:
+        return None
 
 
 def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.DataFrame, float]:

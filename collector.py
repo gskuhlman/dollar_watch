@@ -1,6 +1,6 @@
-"""Headless V2 collector for cron / Windows Task Scheduler.
+"""Headless V2.1 collector for cron / Windows Task Scheduler.
 
-Fetches all public feeds, scores the four regimes, calculates the guarded portfolio,
+Fetches all public feeds, scores the six risk regimes, calculates the guarded portfolio,
 saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ from dollar_dashboard.scoring import DEFAULT_OVERRIDES, score
 from dollar_dashboard.portfolio import recommend
 from dollar_dashboard.storage import get_overrides, get_setting, recent_snapshots, save_snapshot, save_alerts
 from dollar_dashboard.alerts import generate_alerts, send_webhook
+from dollar_dashboard.triggers import evaluate_triggers
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -34,20 +35,24 @@ def main():
         scores["regimes"], baseline, portfolio_value, min_trade_pct=min_trade,
         market_summary=snap.get("market_summary", {}), confidence=scores.get("confidence", 100),
         max_turnover_pct=float(DEFAULT_SETTINGS.get("max_turnover_pct", 25.0)),
+        min_position_pct=float(DEFAULT_SETTINGS.get("min_position_pct", 2.0)),
+        min_trade_dollars=float(DEFAULT_SETTINGS.get("min_trade_dollars", 1000.0)),
     )
-    alerts = generate_alerts(scores, portfolio, prior, float(DEFAULT_SETTINGS.get("alert_threshold_points", 8)))
+    triggers = evaluate_triggers(snap, scores)
+    alerts = generate_alerts(scores, portfolio, prior, float(DEFAULT_SETTINGS.get("alert_threshold_points", 8)), triggers=triggers)
     payload = {
         **snap,
         "scores": scores,
         "news_scores": news_class.get("scores", {}),
-        "overrides": {k: v["value"] for k, v in overrides.items()},
+        "overrides": overrides,
+        "machine_triggers": triggers,
         "portfolio": portfolio.to_dict(orient="records"),
         "portfolio_meta": meta,
         "alerts": alerts,
     }
     rid = save_snapshot(payload)
     save_alerts(alerts)
-    print(f"Saved V2 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Saved V2.1 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
         old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)

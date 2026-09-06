@@ -3,15 +3,23 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
-from .data import fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions, summarize_auction_stress
-from .intelligence import (
-    fetch_cftc_tff, summarize_cftc_fx, fetch_tic_major_holders, summarize_tic,
-    fetch_stablecoins, summarize_stablecoins, build_data_health,
+from .data import (
+    fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions,
+    summarize_auction_stress, summarize_upcoming_auctions,
 )
+from .intelligence import (
+    fetch_cftc_tff, summarize_cftc_fx, summarize_fx_positioning_squeeze,
+    fetch_tic_major_holders, summarize_tic,
+    fetch_stablecoins, summarize_stablecoins,
+    fetch_imf_cofer_usd_share, summarize_cofer,
+    build_data_health, period_last_date,
+)
+from .fiscal import fetch_fiscal_pipeline
 from .news import fetch_news
+
+
 
 
 def _last_index(df: pd.DataFrame):
@@ -39,7 +47,6 @@ def collect_live_bundle() -> dict[str, Any]:
     status: dict[str, dict[str, Any]] = {}
     bundle: dict[str, Any] = {}
 
-    # Market data
     try:
         market_hist, market_summary = fetch_market_history()
         bundle["market_hist"] = market_hist; bundle["market_summary"] = market_summary
@@ -48,74 +55,104 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["market_hist"] = pd.DataFrame(); bundle["market_summary"] = pd.DataFrame()
         status["Market prices"] = {"ok": False, "weight": 1.3, "error": str(e)}
 
-    # FRED
     try:
         fred_hist, fred_summary = fetch_fred_bundle()
         bundle["fred_hist"] = fred_hist; bundle["fred_summary"] = fred_summary
-        status["FRED rates / funding"] = {"ok": not fred_summary.empty, "weight": 1.5, "last_date": _last_index(fred_hist), "notes": "Rates, inflation, term premium, funding and foreign custody"}
+        status["FRED rates / funding"] = {"ok": not fred_summary.empty, "weight": 1.5, "last_date": _last_index(fred_hist), "notes": "Rates, inflation, repo spreads, funding and foreign custody"}
     except Exception as e:
         bundle["fred_hist"] = pd.DataFrame(); bundle["fred_summary"] = pd.DataFrame()
         status["FRED rates / funding"] = {"ok": False, "weight": 1.5, "error": str(e)}
 
-    # Treasury auctions
     try:
         auctions = fetch_treasury_auctions()
         auction_summary, auction_stress = summarize_auction_stress(auctions)
-        bundle["auctions"] = auctions; bundle["auction_summary"] = auction_summary; bundle["auction_stress"] = auction_stress
-        last = auctions["auction_date"].max() if not auctions.empty and "auction_date" in auctions else None
-        status["Treasury auctions"] = {"ok": not auctions.empty, "weight": 1.2, "last_date": last, "notes": "Bid-to-cover and bidder-mix absorption"}
+        upcoming = summarize_upcoming_auctions(auctions)
+        bundle["auctions"] = auctions; bundle["auction_summary"] = auction_summary; bundle["auction_stress"] = auction_stress; bundle["upcoming_auctions"] = upcoming
+        # For auction source freshness, use latest completed/announced record rather than future auction date.
+        last = auctions["record_date"].max() if not auctions.empty and "record_date" in auctions else None
+        status["Treasury auctions"] = {"ok": not auctions.empty, "weight": 1.2, "last_date": last, "notes": "Bid-to-cover, bidder mix, and announced catalysts"}
     except Exception as e:
-        bundle["auctions"] = pd.DataFrame(); bundle["auction_summary"] = pd.DataFrame(); bundle["auction_stress"] = 0.0
+        bundle["auctions"] = pd.DataFrame(); bundle["auction_summary"] = pd.DataFrame(); bundle["auction_stress"] = 0.0; bundle["upcoming_auctions"] = pd.DataFrame()
         status["Treasury auctions"] = {"ok": False, "weight": 1.2, "error": str(e)}
 
-    # CFTC positioning
     try:
         cftc = fetch_cftc_tff()
         cftc_summary, cftc_pressure = summarize_cftc_fx(cftc)
+        fx_squeeze, fx_squeeze_reasons = summarize_fx_positioning_squeeze(cftc_summary)
         bundle["cftc"] = cftc; bundle["cftc_summary"] = cftc_summary; bundle["cftc_pressure"] = cftc_pressure
+        bundle["fx_positioning_squeeze"] = fx_squeeze; bundle["fx_positioning_squeeze_reasons"] = fx_squeeze_reasons
         last = cftc["report_date"].max() if not cftc.empty and "report_date" in cftc else None
-        status["CFTC FX positioning"] = {"ok": not cftc_summary.empty, "weight": 1.0, "last_date": last, "notes": "TFF leveraged money and asset managers"}
+        status["CFTC FX positioning"] = {"ok": not cftc_summary.empty, "weight": 1.0, "last_date": last, "notes": "TFF leveraged money and asset managers; also detects crowded foreign-FX shorts"}
     except Exception as e:
         bundle["cftc"] = pd.DataFrame(); bundle["cftc_summary"] = pd.DataFrame(); bundle["cftc_pressure"] = 0.0
+        bundle["fx_positioning_squeeze"] = 0.0; bundle["fx_positioning_squeeze_reasons"] = []
         status["CFTC FX positioning"] = {"ok": False, "weight": 1.0, "error": str(e)}
 
-    # TIC country holdings
     try:
         tic = fetch_tic_major_holders()
         tic_summary, tic_pressure, tic_meta = summarize_tic(tic)
         bundle["tic"] = tic; bundle["tic_summary"] = tic_summary; bundle["tic_pressure"] = tic_pressure; bundle["tic_meta"] = tic_meta
         last = tic["date"].max() if not tic.empty and "date" in tic else None
-        status["TIC country Treasury holdings"] = {"ok": not tic_summary.empty, "weight": 1.1, "last_date": last, "notes": "Monthly; naturally lagged"}
+        status["TIC country Treasury holdings"] = {"ok": not tic_summary.empty, "weight": 1.1, "last_date": last, "notes": "Monthly; structurally lagged and confidence-weighted before scoring"}
     except Exception as e:
         bundle["tic"] = pd.DataFrame(); bundle["tic_summary"] = pd.DataFrame(); bundle["tic_pressure"] = 0.0; bundle["tic_meta"] = {}
         status["TIC country Treasury holdings"] = {"ok": False, "weight": 1.1, "error": str(e)}
 
-    # Stablecoins
+    try:
+        cofer = fetch_imf_cofer_usd_share()
+        cofer_meta, cofer_pressure = summarize_cofer(cofer)
+        bundle["cofer"] = cofer; bundle["cofer_meta"] = cofer_meta; bundle["cofer_pressure"] = cofer_pressure
+        # Quarter strings are not guaranteed parseable. The API retrieval itself is fresh; the observation date is carried separately.
+        status["IMF COFER"] = {"ok": not cofer.empty, "weight": 1.0, "last_date": period_last_date(cofer_meta.get("latest_period")), "notes": f"Quarterly reserve composition; freshness is based on observation quarter {cofer_meta.get('latest_period','?')}, not retrieval time"}
+    except Exception as e:
+        bundle["cofer"] = pd.DataFrame(); bundle["cofer_meta"] = {}; bundle["cofer_pressure"] = 0.0
+        status["IMF COFER"] = {"ok": False, "weight": 1.0, "error": str(e), "notes": "Quarterly reserve-composition confirmation"}
+
+    try:
+        fiscal_raw, fiscal_meta, fiscal_stress = fetch_fiscal_pipeline()
+        bundle["fiscal_raw"] = fiscal_raw; bundle["fiscal_meta"] = fiscal_meta; bundle["fiscal_stress"] = fiscal_stress
+        last = pd.to_datetime(fiscal_meta.get("record_date"), errors="coerce", utc=True)
+        status["Treasury fiscal flows"] = {"ok": bool(fiscal_meta), "weight": 1.1, "last_date": last, "notes": "Monthly Treasury Statement: receipts, outlays and deficit"}
+    except Exception as e:
+        bundle["fiscal_raw"] = pd.DataFrame(); bundle["fiscal_meta"] = {}; bundle["fiscal_stress"] = 0.0
+        status["Treasury fiscal flows"] = {"ok": False, "weight": 1.1, "error": str(e)}
+
     try:
         stable_assets, stable_hist = fetch_stablecoins()
         stable_focus, stable_meta, stable_support = summarize_stablecoins(stable_assets, stable_hist)
         bundle["stable_assets"] = stable_assets; bundle["stable_hist"] = stable_hist; bundle["stable_focus"] = stable_focus
         bundle["stable_meta"] = stable_meta; bundle["stable_support"] = stable_support
         last = stable_hist["date"].max() if not stable_hist.empty and "date" in stable_hist else pd.Timestamp.now(tz="UTC")
-        status["Stablecoin supply"] = {"ok": not stable_assets.empty, "weight": 0.8, "last_date": last, "notes": "Digital-dollar structural demand proxy"}
+        status["Stablecoin supply"] = {"ok": not stable_assets.empty, "weight": 0.8, "last_date": last, "notes": "Digital-dollar structural demand proxy; peg warning uses same displayed >$1B universe"}
     except Exception as e:
         bundle["stable_assets"] = pd.DataFrame(); bundle["stable_hist"] = pd.DataFrame(); bundle["stable_focus"] = pd.DataFrame()
         bundle["stable_meta"] = {}; bundle["stable_support"] = 0.0
         status["Stablecoin supply"] = {"ok": False, "weight": 0.8, "error": str(e)}
 
-    # Headlines
     try:
         news = fetch_news()
         bundle["news"] = news
         last = news["published_dt"].max() if not news.empty and "published_dt" in news else None
-        status["News discovery"] = {"ok": not news.empty, "weight": 0.7, "last_date": last, "notes": "Headline triage only; not a primary factual source"}
+        status["News discovery"] = {"ok": not news.empty, "weight": 0.5, "last_date": last, "notes": "Headline triage only; cannot directly become verified evidence"}
     except Exception as e:
         bundle["news"] = pd.DataFrame()
-        status["News discovery"] = {"ok": False, "weight": 0.7, "error": str(e)}
+        status["News discovery"] = {"ok": False, "weight": 0.5, "error": str(e)}
 
     health_df, confidence = build_data_health(status)
     bundle["health"] = health_df
     bundle["data_confidence"] = confidence
+    source_confidence = {str(r["source"]): float(r["confidence"]) for _, r in health_df.iterrows()} if not health_df.empty else {}
+    component_confidence = {
+        "market": source_confidence.get("Market prices", 0.0),
+        "fred": source_confidence.get("FRED rates / funding", 0.0),
+        "auction": source_confidence.get("Treasury auctions", 0.0),
+        "cftc": source_confidence.get("CFTC FX positioning", 0.0),
+        "tic": source_confidence.get("TIC country Treasury holdings", 0.0),
+        "cofer": source_confidence.get("IMF COFER", 0.0),
+        "fiscal": source_confidence.get("Treasury fiscal flows", 0.0),
+        "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
+        "news": source_confidence.get("News discovery", 0.0),
+    }
 
     snapshot = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -123,15 +160,24 @@ def collect_live_bundle() -> dict[str, Any]:
         "fred_summary": _index_dict(bundle["fred_summary"]),
         "auction_stress_auto": float(bundle.get("auction_stress", 0) or 0),
         "auction_summary": _records(bundle.get("auction_summary", pd.DataFrame())),
+        "upcoming_auctions": _records(bundle.get("upcoming_auctions", pd.DataFrame())),
         "cftc_usd_downside_pressure": float(bundle.get("cftc_pressure", 0) or 0),
         "cftc_summary": _records(bundle.get("cftc_summary", pd.DataFrame())),
+        "fx_positioning_squeeze_risk": float(bundle.get("fx_positioning_squeeze", 0) or 0),
+        "fx_positioning_squeeze_reasons": bundle.get("fx_positioning_squeeze_reasons", []),
         "tic_dedollarization_pressure": float(bundle.get("tic_pressure", 0) or 0),
         "tic_summary": _records(bundle.get("tic_summary", pd.DataFrame())),
         "tic_meta": bundle.get("tic_meta", {}),
+        "cofer_dedollarization_pressure": float(bundle.get("cofer_pressure", 0) or 0),
+        "cofer_meta": bundle.get("cofer_meta", {}),
+        "fiscal_flow_stress_auto": float(bundle.get("fiscal_stress", 0) or 0),
+        "fiscal_meta": bundle.get("fiscal_meta", {}),
         "stablecoin_dollar_support_auto": float(bundle.get("stable_support", 0) or 0),
         "stablecoin_summary": _records(bundle.get("stable_focus", pd.DataFrame())),
         "stablecoin_meta": bundle.get("stable_meta", {}),
         "data_confidence": float(confidence),
+        "source_confidence": source_confidence,
+        "component_confidence": component_confidence,
         "data_health": _records(health_df),
     }
     bundle["snapshot"] = snapshot

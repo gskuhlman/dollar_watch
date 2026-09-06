@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-UA = {"User-Agent": "DollarCrisisDashboard/2.0 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.1 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -40,7 +40,14 @@ FRED_SERIES = {
     "10Y TIPS real yield": "DFII10",
     "10Y breakeven inflation": "T10YIE",
     "SOFR": "SOFR",
+    "SOFR 99th percentile": "SOFR99",
+    "IORB": "IORB",
+    "Tri-Party General Collateral Rate": "TGCRRATE",
+    "TGCR 99th percentile": "TGCR99THPERCENTILE",
     "Fed balance sheet (millions)": "WALCL",
+    "Fed Treasury holdings (millions)": "TREAST",
+    "Fed MBS holdings (millions)": "WSHOMCB",
+    "Fed liquidity-facility loans (millions)": "WLCFLL",
     "ON RRP (billions)": "RRPONTSYD",
     "VIX": "VIXCLS",
     "High-yield spread": "BAMLH0A0HYM2",
@@ -125,20 +132,49 @@ def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataF
     if not series:
         return pd.DataFrame(), pd.DataFrame()
     hist = pd.concat(series, axis=1).sort_index()
+    # Repo-plumbing spreads. Percent units: 0.10 = 10bp.
+    if "SOFR" in hist.columns and "IORB" in hist.columns:
+        hist["SOFR-IORB spread"] = hist["SOFR"] - hist["IORB"]
+    if "SOFR 99th percentile" in hist.columns and "IORB" in hist.columns:
+        hist["SOFR99-IORB spread"] = hist["SOFR 99th percentile"] - hist["IORB"]
+    if "Tri-Party General Collateral Rate" in hist.columns and "IORB" in hist.columns:
+        hist["TGCR-IORB spread"] = hist["Tri-Party General Collateral Rate"] - hist["IORB"]
+    if "TGCR 99th percentile" in hist.columns and "Tri-Party General Collateral Rate" in hist.columns:
+        hist["TGCR dispersion"] = hist["TGCR 99th percentile"] - hist["Tri-Party General Collateral Rate"]
+    # H.4.1 asset decomposition. This makes balance-sheet changes explainable instead of
+    # treating WALCL as a monolith. Values are all millions of dollars. The residual is
+    # deliberately labeled residual because it includes asset categories not modeled here.
+    asset_cols = [
+        "Fed Treasury holdings (millions)",
+        "Fed MBS holdings (millions)",
+        "Fed liquidity-facility loans (millions)",
+        "Central bank liquidity swaps (millions)",
+    ]
+    if "Fed balance sheet (millions)" in hist.columns:
+        available = [c for c in asset_cols if c in hist.columns]
+        if available:
+            hist["Fed identified assets (millions)"] = hist[available].sum(axis=1, min_count=1)
+            hist["Fed other assets residual (millions)"] = hist["Fed balance sheet (millions)"] - hist["Fed identified assets (millions)"]
     rows = {}
     for label in hist.columns:
         s = hist[label].dropna()
         if s.empty:
             rows[label] = {"last": np.nan, "1w_change": np.nan, "1m_change": np.nan, "3m_change": np.nan, "1y_change": np.nan}
             continue
-        def delta(n: int):
-            return float(s.iloc[-1] - s.iloc[-n - 1]) if len(s) > n else np.nan
+        def delta_days(days: int):
+            # Calendar-based comparison works across daily, weekly and monthly FRED series.
+            # Observation-count windows badly overstate the lookback on H.4.1 weekly series.
+            target = s.index[-1] - pd.Timedelta(days=days)
+            prior = s.loc[s.index <= target]
+            if prior.empty:
+                return np.nan
+            return float(s.iloc[-1] - prior.iloc[-1])
         rows[label] = {
             "last": float(s.iloc[-1]),
-            "1w_change": delta(5),
-            "1m_change": delta(21),
-            "3m_change": delta(63),
-            "1y_change": delta(252),
+            "1w_change": delta_days(7),
+            "1m_change": delta_days(30),
+            "3m_change": delta_days(91),
+            "1y_change": delta_days(365),
         }
     return hist, pd.DataFrame(rows).T
 
@@ -151,7 +187,7 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
     """Fetch official Treasury auction results from FiscalData (no API key required)."""
     fields = [
         "record_date", "cusip", "security_type", "security_term", "original_security_term",
-        "auction_date", "reopening", "bid_to_cover_ratio", "comp_accepted", "total_accepted",
+        "announcement_date", "auction_date", "issue_date", "reopening", "bid_to_cover_ratio", "comp_accepted", "total_accepted",
         "primary_dealer_accepted", "direct_bidder_accepted", "indirect_bidder_accepted",
     ]
     params = {
@@ -170,7 +206,7 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
     for c in ["bid_to_cover_ratio", "comp_accepted", "total_accepted", "primary_dealer_accepted", "direct_bidder_accepted", "indirect_bidder_accepted"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ["record_date", "auction_date"]:
+    for c in ["record_date", "announcement_date", "auction_date", "issue_date"]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     denom = df.get("comp_accepted")
@@ -243,6 +279,23 @@ def summarize_auction_stress(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:
     # Use a blend of mean and worst tenor to avoid one odd auction dominating while still flagging acute weakness.
     overall = 0.0 if not stress_values else min(100.0, 0.65*float(np.mean(stress_values)) + 0.35*float(np.max(stress_values)))
     return out, overall
+
+
+def summarize_upcoming_auctions(df: pd.DataFrame, days: int = 21) -> pd.DataFrame:
+    if df is None or df.empty or "auction_date" not in df.columns:
+        return pd.DataFrame()
+    today = pd.Timestamp.now(tz=None).normalize()
+    end = today + pd.Timedelta(days=days)
+    d = df.copy()
+    d["auction_date"] = pd.to_datetime(d["auction_date"], errors="coerce").dt.tz_localize(None)
+    d = d[(d["auction_date"] >= today) & (d["auction_date"] <= end)]
+    if d.empty:
+        return d
+    major = ["2-Year", "3-Year", "5-Year", "7-Year", "10-Year", "20-Year", "30-Year"]
+    if "term_key" in d.columns:
+        d = d[d["term_key"].astype(str).isin(major)]
+    cols = [c for c in ["announcement_date","auction_date","issue_date","term_key","security_type","reopening","cusip"] if c in d.columns]
+    return d[cols].sort_values("auction_date").drop_duplicates(subset=[c for c in ["auction_date","term_key","cusip"] if c in cols])
 
 def market_snapshot() -> dict:
     close, market = fetch_market_history()
