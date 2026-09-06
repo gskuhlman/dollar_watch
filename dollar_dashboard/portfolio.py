@@ -89,6 +89,17 @@ PROXY = {
     "Bitcoin": ("Bitcoin", "1m"),
 }
 
+FUNDING_HEDGE_CLASS = {
+    "T-bills / cash equivalents":"DIRECT HEDGE",
+    "TIPS":"USD-DENOMINATED / RATE-SENSITIVE",
+    "Gold":"CONDITIONAL / UNRELIABLE",
+    "Developed ex-US equities (unhedged)":"VULNERABLE",
+    "US real-asset / value equities":"VULNERABLE",
+    "Broad commodities / energy":"VULNERABLE",
+    "CHF / defensive FX":"CONDITIONAL / UNRELIABLE",
+    "Bitcoin":"VULNERABLE",
+}
+
 REVERSAL_TRIGGERS = {
     "T-bills / cash equivalents": "Reduce defensive cash only after repo/funding conditions are benign and fiscal/reserve regimes retreat.",
     "TIPS": "Reduce if breakevens fall, term premium normalizes, and fiscal/inflation regimes retreat.",
@@ -200,6 +211,17 @@ def _apply_machine_precommitments(rec: dict[str,float], machine_triggers: list[d
     """
     out=rec.copy(); notes=[]
     by={str(t.get("id")):t for t in (machine_triggers or [])}
+    funding=by.get("repo_or_swap_stress")
+    if funding and funding.get("status")=="TRIGGERED":
+        # A dollar-liquidity event is the opposite of a non-USD risk-on signal.  Move
+        # explicitly toward bills and away from the two most reliable funding-shock losers.
+        cut_btc=min(2.0,out["Bitcoin"])
+        cut_exus=min(2.0,out["Developed ex-US equities (unhedged)"])
+        out["Bitcoin"]-=cut_btc
+        out["Developed ex-US equities (unhedged)"]-=cut_exus
+        out["T-bills / cash equivalents"]+=cut_btc+cut_exus
+        notes.append(f"Funding-stress pre-commitment applied: +{cut_btc+cut_exus:.1f}pp T-bills funded from BTC/ex-US. Large swap/FIMA draws are dollar-liquidity stress, never a reason to add non-USD exposure.")
+
     weak=by.get("weak_10y_30y_pair")
     if weak and weak.get("status")=="TRIGGERED":
         flavor=weak.get("stress_flavor")
@@ -354,11 +376,25 @@ def scenario_hedge_alignment(allocation: dict[str, float], portfolio_value: floa
             alignment="HIGHLY VULNERABLE"
         # 50 = approximately neutral; capped for readability, not a probability.
         score=max(0.0,min(100.0,50.0+4.0*ret))
+        extra={}
+        if r["Scenario"]=="Dollar funding squeeze":
+            total=sum(float(allocation.get(a,0)) for a in ASSETS) or 100.0
+            cats={}
+            for a in ASSETS:
+                cls=FUNDING_HEDGE_CLASS[a]; cats[cls]=cats.get(cls,0.0)+100.0*float(allocation.get(a,0))/total
+            extra={
+                "Direct hedge %":round(cats.get("DIRECT HEDGE",0.0),1),
+                "Conditional / unreliable %":round(cats.get("CONDITIONAL / UNRELIABLE",0.0),1),
+                "USD-denominated rate-sensitive %":round(cats.get("USD-DENOMINATED / RATE-SENSITIVE",0.0),1),
+                "Vulnerable %":round(cats.get("VULNERABLE",0.0),1),
+                "Classification note":"USD denomination alone is not a funding-squeeze hedge; T-bills are the clean direct hedge.",
+            }
         rows.append({
             "Scenario":r["Scenario"],
             "Hedge alignment":alignment,
             "Alignment index (not probability)":round(score,1),
             "Illustrative return %":ret,
             "Illustrative P/L $":r["Illustrative P/L $"],
+            **extra,
         })
     return pd.DataFrame(rows)

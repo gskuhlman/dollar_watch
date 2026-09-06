@@ -220,7 +220,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "news": source_confidence.get("News discovery", 0.0),
     }
 
-    # V2.8: a free front-futures/spot anomaly proxy adds modest visibility, but it is
+    # V2.9: a free front-futures/spot anomaly proxy adds modest visibility, but it is
     # explicitly NOT cross-currency basis.  True institutional basis remains a gap.
     offshore_proxy=bundle.get("offshore_fx_proxy",{}) or {}
     offshore_funding_meta = {

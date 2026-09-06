@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.8 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/3.0 (+local research dashboard)"}
 BUYBACK_PAGE = "https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/"
 SCHEDULE_XML_URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
 RESULT_DIR = "https://www.treasurydirect.gov/instit/annceresult/press/preanre/{year}/"
@@ -84,6 +84,61 @@ def _coalesced_money(rec: dict, root: ET.Element, aliases: list[str], required_t
         return v
     v=_semantic_money(root, aliases, required_terms)
     return None if v is None or pd.isna(v) else v
+
+
+
+def _all_tag_values(root: ET.Element, aliases: list[str]) -> list[str]:
+    wanted={_norm(x) for x in aliases}
+    out=[]
+    for el in root.iter():
+        if _norm(el.tag) in wanted:
+            txt=_element_text(el)
+            if txt:
+                out.append(txt)
+    return out
+
+
+def _infer_maturity_bucket_from_xml(root: ET.Element, operation_date, security_type: str = "") -> tuple[str, str]:
+    """Infer an operation sector from result-level security maturity dates when Treasury omits the bucket.
+
+    Buyback result XMLs can contain repeated security rows while the operation-level maturity bucket is
+    absent or lost by schema changes.  For long-end classification, the accepted/eligible securities'
+    maturity dates are sufficient to distinguish the nominal 10Y-20Y and 20Y-30Y sectors.
+    """
+    vals=_all_tag_values(root,["maturityDate","securityMaturityDate","maturityDt"])
+    dates=pd.to_datetime(pd.Series(vals,dtype='object'),errors='coerce',utc=True).dropna()
+    base=pd.to_datetime(operation_date,errors='coerce',utc=True)
+    if dates.empty or pd.isna(base):
+        return "", "UNAVAILABLE"
+    yrs=((dates-base).dt.total_seconds()/(365.25*86400)).sort_values()
+    lo=float(yrs.min()); hi=float(yrs.max())
+    st=(security_type or '').lower()
+    prefix='TIPS' if 'tips' in st or 'inflation' in st else 'Nominal Coupons'
+    if lo >= 18.0:
+        return f"{prefix} 20Y to 30Y", "INFERRED_FROM_MATURITY_DATES"
+    if lo >= 8.5 and hi > 10.0:
+        return f"{prefix} 10Y to 20Y", "INFERRED_FROM_MATURITY_DATES"
+    if lo >= 6.0 and hi <= 11.0:
+        return f"{prefix} 7Y to 10Y", "INFERRED_FROM_MATURITY_DATES"
+    if lo >= 4.0 and hi <= 8.0:
+        return f"{prefix} 5Y to 7Y", "INFERRED_FROM_MATURITY_DATES"
+    if lo >= 2.5 and hi <= 6.0:
+        return f"{prefix} 3Y to 5Y", "INFERRED_FROM_MATURITY_DATES"
+    if lo >= 1.5 and hi <= 4.0:
+        return f"{prefix} 2Y to 3Y", "INFERRED_FROM_MATURITY_DATES"
+    if hi <= 2.5:
+        return f"{prefix} 1Mo to 2Y", "INFERRED_FROM_MATURITY_DATES"
+    return "", "UNRESOLVED"
+
+
+def _long_end_nominal_mask(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series(dtype=bool)
+    bucket=df.get('maturity_bucket',pd.Series('',index=df.index)).fillna('').astype(str).str.lower()
+    stype=df.get('security_type',pd.Series('',index=df.index)).fillna('').astype(str).str.lower()
+    long_sector=bucket.str.contains(r'(?:10\s*y.*20\s*y|20\s*y.*30\s*y|10\s*year.*20\s*year|20\s*year.*30\s*year)',regex=True,na=False)
+    tips=bucket.str.contains('tips|inflation',regex=True,na=False) | stype.str.contains('tips|inflation',regex=True,na=False)
+    return long_sector & ~tips
 
 def _leaf_record(el: ET.Element) -> dict:
     rec = {}
@@ -245,13 +300,19 @@ def _normalize_result_xml(content: bytes, source_url: str) -> dict:
     start = _to_et_datetime(_first(rec, ["operationStartDtm", "operationStartDatetime", "operationStartDateTime"]))
     if pd.isna(op) and pd.notna(start):
         op = start.normalize()
+    security_type=_first(rec, ["securityType"], "")
+    maturity_bucket=_first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], "")
+    bucket_source="RESULT_XML" if str(maturity_bucket).strip() else ""
+    if not str(maturity_bucket).strip():
+        maturity_bucket,bucket_source=_infer_maturity_bucket_from_xml(root, op if pd.notna(op) else start, security_type)
     return {
         "operation_date": op,
         "operation_start": start,
         "settlement_date": _to_et_datetime(_first(rec, ["settlementDate", "settlementDt"])),
         "operation_type": _first(rec, ["operationType", "buybackType"], ""),
-        "security_type": _first(rec, ["securityType"], ""),
-        "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
+        "security_type": security_type,
+        "maturity_bucket": maturity_bucket,
+        "maturity_bucket_source": bucket_source,
         "max_amount": _coalesced_money(rec, root, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmountToBeRedeemed", "maximumParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"], ("par","redeem")),
         "total_offered": _coalesced_money(rec, root, ["totalParAmountOffered", "totalAmountOffered"], ("total","offered")),
         "total_accepted": _coalesced_money(rec, root, ["totalParAmountAccepted", "totalAmountAccepted"], ("total","accepted")),
@@ -328,7 +389,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
 
 
 def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
-    """V2.8 buyback collector.
+    """V3.0 buyback collector.
 
     The official tentative schedule and completed TreasuryDirect result XMLs are separate evidence
     surfaces. A result-XML failure does not erase a successfully retrieved schedule, and a schedule
@@ -351,13 +412,13 @@ def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
         merged = schedule.copy()
         if not results.empty:
             key = ["operation_date"]
-            rcols = ["operation_date", "operation_start", "operation_type", "security_type", "maturity_bucket", "max_amount", "total_offered", "total_accepted", "issues_eligible", "issues_accepted", "offer_accept_ratio", "result_url"]
+            rcols = ["operation_date", "operation_start", "operation_type", "security_type", "maturity_bucket", "maturity_bucket_source", "max_amount", "total_offered", "total_accepted", "issues_eligible", "issues_accepted", "offer_accept_ratio", "result_url"]
             rsmall = results[[c for c in rcols if c in results.columns]].drop_duplicates("operation_date", keep="last")
             merged = merged.merge(rsmall, on="operation_date", how="outer", suffixes=("", "_result"))
             # Completed result XMLs are authoritative for execution fields.  Coalesce result
-            # maximum capacity and classification fields into the tentative-schedule row; V2.8
+            # maximum capacity and classification fields into the tentative-schedule row; V2.9
             # prevents dropped result max_amount here, creating a false zero-capacity signal.
-            for col in ["operation_start", "operation_type", "security_type", "maturity_bucket", "max_amount"]:
+            for col in ["operation_start", "operation_type", "security_type", "maturity_bucket", "maturity_bucket_source", "max_amount"]:
                 rc=f"{col}_result"
                 if rc in merged.columns:
                     if col not in merged.columns:
@@ -390,8 +451,7 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         }
     work = df.copy()
     work["operation_date"] = pd.to_datetime(work.get("operation_date"), errors="coerce", utc=True)
-    sector = work.get("maturity_bucket", pd.Series("", index=work.index)).astype(str).str.lower()
-    long_mask = sector.str.contains(r"10|20|30|long", regex=True, na=False)
+    long_mask = _long_end_nominal_mask(work)
     upcoming = work[work["operation_date"] > now]
     completed = work[work.get("has_result", pd.Series(False, index=work.index)).fillna(False).astype(bool)]
     long_upcoming = upcoming[long_mask.reindex(upcoming.index, fill_value=False)]
@@ -408,6 +468,11 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
     offered = float(pd.to_numeric(completed.get("total_offered"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_offered" in completed else 0.0
     accepted = float(pd.to_numeric(completed.get("total_accepted"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_accepted" in completed else 0.0
     offer_accept = (offered / accepted) if accepted > 0 else None
+    long_offered = float(pd.to_numeric(long_completed.get("total_offered"), errors="coerce").fillna(0).sum()) if not long_completed.empty and "total_offered" in long_completed else 0.0
+    long_accepted = float(pd.to_numeric(long_completed.get("total_accepted"), errors="coerce").fillna(0).sum()) if not long_completed.empty and "total_accepted" in long_completed else 0.0
+    long_completed_max_series = pd.to_numeric(long_completed.get("max_amount"), errors="coerce") if not long_completed.empty and "max_amount" in long_completed else pd.Series(dtype=float)
+    long_completed_capacity = float(long_completed_max_series.dropna().sum()) if int(long_completed_max_series.notna().sum()) else None
+    long_accept_capacity = (long_accepted / long_completed_capacity) if long_completed_capacity and long_completed_capacity > 0 else None
     completeness = meta.get("result_completeness_pct")
     result_classification = "COMPLETE" if completeness is not None and completeness >= 80 else ("INCOMPLETE" if completeness is not None else "UNKNOWN_EXPECTED_SET")
     conclusions_allowed = result_classification == "COMPLETE"
@@ -436,8 +501,18 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "completed_operations": int(len(completed)),
         "long_end_operations": int(len(long_upcoming)),
         "long_end_completed_operations": int(len(long_completed)),
+        "long_end_nominal_completed_operations": int(len(long_completed)),
+        "long_end_completed_total_offered": long_offered,
+        "long_end_completed_total_accepted": long_accepted,
+        "long_end_completed_capacity": long_completed_capacity,
+        "long_end_acceptance_vs_capacity": None if long_accept_capacity is None else round(long_accept_capacity, 3),
         "total_max_amount": total_max,
-        "long_end_max_amount": long_max,
+        # Legacy field retained for UI/LLM compatibility.  Prefer observed completed-operation
+        # capacity; otherwise show upcoming announced capacity.  Separate scoped fields below
+        # prevent a null legacy value from contradicting a known completed-capacity calculation.
+        "long_end_max_amount": long_completed_capacity if long_completed_capacity is not None else long_max,
+        "long_end_max_amount_scope": "COMPLETED_RESULTS" if long_completed_capacity is not None else ("UPCOMING_SCHEDULE" if long_max is not None else "UNKNOWN"),
+        "long_end_upcoming_max_amount": long_max,
         "parsed_max_amount_rows": parsed_max_count,
         "parsed_result_max_amount_rows": result_max_count,
         "completed_total_offered": offered,
@@ -451,5 +526,5 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "max_amount_parse_status": "OK" if max_amount_known else "UNKNOWN_OR_PARSE_FAILED",
         "intensity_status": "KNOWN" if intensity is not None else "UNKNOWN",
         "intensity": None if intensity is None else round(intensity, 1),
-        "interpretation": "Treasury debt-management/liquidity-support activity. Not QE and not proof of failed auction demand.",
+        "interpretation": "Treasury debt-management/liquidity-support activity. Long-end means nominal 10Y-20Y and 20Y-30Y sectors only. Not QE and not proof of failed auction demand.",
     }

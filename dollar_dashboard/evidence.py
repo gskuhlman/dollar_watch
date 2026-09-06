@@ -51,7 +51,7 @@ def check_source_url(url: str, timeout: int = 8) -> dict:
     if not url:
         return {**info, "reachable": False, "http_status": None, "note": "No source URL supplied."}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.8"}, stream=True)
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.0"}, stream=True)
         ok = 200 <= r.status_code < 400
         return {
             **info,
@@ -90,7 +90,7 @@ def fetch_source_text(url: str, max_chars: int = 30000, timeout: int = 12) -> di
     if not url:
         return {"ok": False, "text": "", "error": "No URL supplied", **classify_source(url)}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.8"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.0"})
         r.raise_for_status()
         ctype = (r.headers.get("content-type") or "").lower()
         raw = r.text

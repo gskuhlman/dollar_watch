@@ -14,7 +14,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.8 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/3.0 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -277,7 +277,7 @@ def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataF
             "1y_change": delta_days(365),
         }
 
-    # V2.8 distributional context for every sufficiently populated FRED series.
+    # V2.9 distributional context for every sufficiently populated FRED series.
     # This replaces many hand-waved "unusual" labels with the series' own recent history.
     # Percentiles are descriptive, not automatically directional risk signals.
     for label in hist.columns:
@@ -297,10 +297,21 @@ def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataF
             rows[label][f"zscore_{suffix}"]=((last-mean)/std) if std>0 else 0.0
             rows[label][f"history_obs_{suffix}"]=int(len(window))
 
-    # V2.8 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
+    # V2.9 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
     # thing as the median SOFR-IORB spread. Track its own historical extremeness and
     # persistence so the dashboard cannot describe a tail move as being "1bp from"
     # the median funding-stress trigger.
+    # V3.0 stateful funding-stress recovery support.  The trigger engine uses these
+    # persistence counts only after a funding-stress episode has actually been active.
+    median_label = "SOFR-IORB spread"
+    if median_label in hist.columns and median_label in rows:
+        mts = hist[median_label].dropna()
+        if not mts.empty:
+            recent5 = mts.tail(5)
+            rows[median_label]["recent_obs_le_3bp"] = int((recent5 <= 0.03).sum())
+            rows[median_label]["recent_obs_le_5bp"] = int((recent5 <= 0.05).sum())
+            rows[median_label]["recent_obs_count_5"] = int(len(recent5))
+
     tail_label = "SOFR99-IORB spread"
     if tail_label in hist.columns and tail_label in rows:
         ts = hist[tail_label].dropna()
@@ -326,7 +337,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.8 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.9 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -479,7 +490,7 @@ def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd
     """Fetch upcoming Treasury auctions with a same-source fallback for missing benchmark tenors.
 
     FiscalData's dedicated upcoming table can lag or label reopenings by remaining maturity.
-    V2.8 canonicalizes terms and supplements it from the full auction table's future placeholders,
+    V2.9 canonicalizes terms and supplements it from the full auction table's future placeholders,
     without ever feeding those placeholders into historical auction stress.
     """
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()

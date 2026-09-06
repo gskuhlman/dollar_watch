@@ -86,6 +86,21 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     n = news_classification.get("scores", {})
     ov, override_audit = _verified_overrides(overrides)
 
+    approved_policy_evidence = snapshot.get("approved_verification_evidence", []) or []
+    policy_evidence_net = 0.0
+    policy_evidence_rows = []
+    for ev in approved_policy_evidence:
+        if str(ev.get("effect_target") or "") != "managed_devaluation":
+            continue
+        try:
+            direction=float(ev.get("effect_direction") or 0); weight=float(ev.get("effect_weight") or 0)
+        except Exception:
+            continue
+        contribution=max(-12.0,min(12.0,direction*weight))
+        policy_evidence_net += contribution
+        policy_evidence_rows.append({**ev,"score_contribution":round(contribution,1)})
+    policy_evidence_net=max(-20.0,min(25.0,policy_evidence_net))
+
     market_conf = _conf(snapshot, "market")
     fred_conf = _conf(snapshot, "fred")
     auction_conf = _conf(snapshot, "auction")
@@ -174,6 +189,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     policy_intent += 0.25 * ov.get("fed_independence_pressure", 0)
     policy_intent += 0.18 * ov.get("capital_control_or_holder_fee_risk", 0)
     policy_intent += policy_news
+    policy_intent += policy_evidence_net
     policy_intent = _clamp(policy_intent)
 
     external = 0.36 * tic_pressure + 0.22 * cofer_pressure
@@ -287,6 +303,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     managed = _clamp(8 + 0.48 * policy_intent + 0.18 * cftc_pressure + 0.25 * confirmation - 0.10 * support)
     if dxy_3m < -0.03: drivers["managed_devaluation"].append("DXY down >3% over ~3 months")
     if cftc_pressure >= 60: drivers["managed_devaluation"].append("CFTC positioning supports broad USD downside")
+    if policy_evidence_net > 0: drivers["managed_devaluation"].append(f"Approved primary-source policy evidence adds {policy_evidence_net:+.0f} points")
+    elif policy_evidence_net < 0: drivers["managed_devaluation"].append(f"Approved primary-source policy evidence subtracts {abs(policy_evidence_net):.0f} points")
     if policy_intent >= 50: drivers["managed_devaluation"].append("Verified policy-intent evidence is elevated")
 
     fiscal = _clamp(7 + 0.67 * fiscal_supply + 0.12 * institutional + 0.12 * confirmation)
@@ -376,7 +394,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             vals.append(100.0 if a.get("verification_status")=="VERIFIED" and a.get("source_tier") not in {"","UNSOURCED"} else 0.0)
         return sum(vals)/len(vals) if vals else 0.0
 
-    policy_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
+    policy_manual_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
+    approved_policy_buckets={str(e.get("bucket") or "") for e in policy_evidence_rows}
+    policy_queue_critical=min(100.0,35.0*len(approved_policy_buckets)) if policy_evidence_rows else 0.0
+    policy_critical=max(policy_manual_critical,policy_queue_critical)
     reserve_policy_critical=_verified(["foreign_official_selling","brics_payment_progress","central_bank_gold_rotation","commodity_dedollarization"])
     generic_coverage = {
         "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_schedule_conf*100 + 0.20*news_conf*100),
@@ -414,6 +435,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "regime_mix_not_probability": mix,
         "components": {
             "Policy intent / intervention": round(policy_intent, 1),
+            "Approved policy evidence net effect": round(policy_evidence_net,1),
             "Fundamental USD-downside positioning": round(cftc_pressure, 1),
             "FX positioning squeeze risk": round(fx_squeeze_auto, 1),
             "External de-dollarization pressure": round(external, 1),
@@ -426,6 +448,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         },
         "confidence_adjustments": confidence_audit,
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
+        "approved_policy_evidence": policy_evidence_rows,
         "repo_tail_signal": {
             "status": "CONFIRM" if repo_tail_confirm else ("WATCH" if repo_tail_watch else "NORMAL"),
             "sofr99_iorb": sofr99_iorb, "percentile_1y": sofr99_pct, "zscore_1y": sofr99_z,

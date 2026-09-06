@@ -3,6 +3,23 @@
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
 
 
+## V3.0 — Feature-freeze baseline completed
+
+- [x] Route policy research to actual official news/remarks/policy surfaces before semantic ranking; reject privacy/help/assistance pages.
+- [x] Rewrite standing policy probes as narrow, falsifiable propositions.
+- [x] Add bounded **positive and negative** managed-devaluation score effects from human-approved, source-relevant, LLM-SUPPORTED primary evidence.
+- [x] Allow approved policy evidence to raise managed-devaluation critical coverage.
+- [x] Add stateful funding-stress hysteresis and a recovery KILL that is valid only after a prior stress episode.
+- [x] Treat swap-line/FIMA draws as dollar-funding stress, never a reason to add non-USD exposure.
+- [x] Add funding-stress pre-commitment toward T-bills and away from BTC/unhedged ex-US risk.
+- [x] Split funding-squeeze alignment into direct, conditional/unreliable, USD-rate-sensitive, and vulnerable exposure.
+- [x] Reconcile completed vs upcoming long-end buyback capacity fields.
+- [x] Add V3.0 regressions for all of the above.
+
+### Feature-freeze rule
+
+Do not add another regime or broad indicator family until the model has accumulated enough live history to evaluate trigger precision, false positives, portfolio turnover and event-response quality. New work should first improve **data quality or calibration**.
+
 ## V2.6 — Completed from fourth red-team review
 
 - [x] Discover completed TreasuryDirect buyback result XMLs independently of the dynamic webpage; derive official result filenames from operation date/start time and use a bounded fallback probe.
@@ -274,3 +291,17 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] Add true cross-currency-basis / FX-swap data only if a dependable accessible source becomes available.
 - [ ] Calibrate thresholds and portfolio reactions against historical and newly observed event outcomes.
 - [ ] Replace static scenario sensitivities with empirical regime/event betas after enough observations accumulate.
+
+
+## V3.0 completed
+
+- [x] Repair long-end nominal Treasury buyback sector attribution when result XML omits `maturity_bucket`.
+- [x] Report completed long-end offered/accepted/max-capacity and acceptance-vs-capacity separately.
+- [x] Normalize discovery-news buckets to primary-source verification families before P0/P1 prioritization.
+- [x] Add standing policy probes so the verification queue cannot go dark when RSS/news discovery is unavailable.
+- [x] Share headline-to-verification mapping between Streamlit and the headless collector.
+- [x] Add V3.0 regressions for known 2026 long-end operations and guaranteed research-lead generation.
+
+## Freeze / observe after V3.0
+
+Do not change the six-regime architecture merely because a single live event disagrees with the model. Accumulate history through auctions, CFTC, TIC/COFER, funding events, and verified policy statements; adjust thresholds only when repeated observed behavior justifies calibration.

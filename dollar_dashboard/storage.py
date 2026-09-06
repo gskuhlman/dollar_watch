@@ -304,7 +304,7 @@ def _ensure_verification_queue(con) -> None:
             updated_at TEXT NOT NULL,
             priority TEXT, bucket TEXT, claim TEXT NOT NULL, headline_source TEXT, headline_url TEXT,
             preferred_source TEXT, status TEXT DEFAULT 'QUEUED', candidate_url TEXT, candidate_tier TEXT,
-            candidate_relevance REAL, relevance_status TEXT, llm_verdict TEXT, llm_explanation TEXT, approved_status TEXT DEFAULT 'UNVERIFIED'
+            candidate_relevance REAL, relevance_status TEXT, llm_verdict TEXT, llm_explanation TEXT, approved_status TEXT DEFAULT 'UNVERIFIED', effect_target TEXT, effect_direction REAL DEFAULT 0, effect_weight REAL DEFAULT 0
         )
     """)
     # Forward-compatible migration for databases created before V2.7.
@@ -313,9 +313,12 @@ def _ensure_verification_queue(con) -> None:
         con.execute("ALTER TABLE verification_queue ADD COLUMN candidate_relevance REAL")
     if "relevance_status" not in cols:
         con.execute("ALTER TABLE verification_queue ADD COLUMN relevance_status TEXT")
+    if "effect_target" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_target TEXT")
+    if "effect_direction" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_direction REAL DEFAULT 0")
+    if "effect_weight" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_weight REAL DEFAULT 0")
 
 def _sync_verification_quarantine(con) -> int:
-    """Quarantine legacy checks whose queue candidate now fails V2.8 relevance rules.
+    """Quarantine legacy checks whose queue candidate now fails V2.9 relevance rules.
 
     This is intentionally conservative: only checks that can be matched back to a queue row
     by claim + candidate/source URL are automatically quarantined.  Unmatched historical checks
@@ -347,15 +350,15 @@ def upsert_verification_queue(rows: list[dict]) -> int:
         claim=str(r.get('claim') or '').strip(); bucket=str(r.get('bucket') or '').strip(); url=str(r.get('link') or '').strip()
         if len(claim)<10 or not bucket: continue
         key=hashlib.sha256((bucket+'|'+claim).encode('utf-8')).hexdigest()
-        con.execute("""INSERT INTO verification_queue(claim_key,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status)
-        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_key) DO UPDATE SET updated_at=excluded.updated_at,priority=excluded.priority,headline_source=excluded.headline_source,headline_url=excluded.headline_url,preferred_source=excluded.preferred_source""",
-        (key,now,now,r.get('priority'),bucket,claim,r.get('source'),url,r.get('preferred_verification_source'),'QUEUED')); n+=1
+        con.execute("""INSERT INTO verification_queue(claim_key,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,effect_target,effect_direction,effect_weight)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_key) DO UPDATE SET updated_at=excluded.updated_at,priority=excluded.priority,headline_source=excluded.headline_source,headline_url=excluded.headline_url,preferred_source=excluded.preferred_source,effect_target=excluded.effect_target,effect_direction=excluded.effect_direction,effect_weight=excluded.effect_weight""",
+        (key,now,now,r.get('priority'),bucket,claim,r.get('source'),url,r.get('preferred_verification_source'),'QUEUED',r.get('effect_target',''),float(r.get('effect_direction') or 0),float(r.get('effect_weight') or 0))); n+=1
     con.commit(); con.close(); return n
 
 def recent_verification_queue(limit:int=100) -> list[dict]:
     con=connect(); _ensure_verification_queue(con)
-    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,llm_explanation,approved_status FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
-    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','candidate_relevance','relevance_status','llm_verdict','llm_explanation','approved_status']
+    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,llm_explanation,approved_status,effect_target,effect_direction,effect_weight FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
+    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','candidate_relevance','relevance_status','llm_verdict','llm_explanation','approved_status','effect_target','effect_direction','effect_weight']
     return [dict(zip(keys,r)) for r in rows]
 
 def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED',candidate_relevance:float|None=None,relevance_status:str='') -> None:
@@ -371,3 +374,17 @@ def update_verification_queue_approval(queue_id:int,approved_status:str) -> None
     con=connect(); _ensure_verification_queue(con)
     con.execute("UPDATE verification_queue SET updated_at=?,approved_status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),status,int(queue_id)))
     con.commit(); con.close()
+
+
+def approved_verification_evidence(limit:int=100) -> list[dict]:
+    """Human-approved, source-relevant, LLM-supported checks eligible for bounded score effects.
+
+    Approval is the explicit promotion gate.  CONTRADICTED/INCONCLUSIVE checks remain audit data and
+    do not invert a claim automatically.
+    """
+    con=connect(); _ensure_verification_queue(con)
+    rows=con.execute("""SELECT id,updated_at,priority,bucket,claim,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,approved_status,effect_target,effect_direction,effect_weight
+      FROM verification_queue WHERE approved_status='APPROVED' AND relevance_status='RELEVANT' AND upper(COALESCE(llm_verdict,''))='SUPPORTED'
+      ORDER BY updated_at DESC LIMIT ?""",(limit,)).fetchall(); con.close()
+    keys=['id','updated_at','priority','bucket','claim','source_url','source_tier','relevance_score','relevance_status','verdict','approved_status','effect_target','effect_direction','effect_weight']
+    return [dict(zip(keys,r)) for r in rows]

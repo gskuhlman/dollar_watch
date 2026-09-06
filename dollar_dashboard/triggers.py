@@ -112,7 +112,7 @@ def _condition_status(condition: bool, lifecycle: dict, partial: bool=False) -> 
     return "TRIGGERED"
 
 
-def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
+def evaluate_triggers(snapshot: dict, scores: dict, previous_triggers: list[dict] | None = None) -> list[dict]:
     """Machine-readable pre-commitments with age/expiration for event-based evidence."""
     f = snapshot.get("fred_summary", {})
     m = snapshot.get("market_summary", {})
@@ -141,6 +141,8 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     swaps = _safe(_v(f, "Central bank liquidity swaps (millions)", "last"), 0)
     fima = _safe(_v(f, "FIMA repo - foreign official (millions)", "last"), 0)
     sofr_iorb = _safe(_v(f, "SOFR-IORB spread", "last"))
+    sofr_recent_le3 = int(_safe(_v(f, "SOFR-IORB spread", "recent_obs_le_3bp"),0) or 0)
+    sofr_recent_count = int(_safe(_v(f, "SOFR-IORB spread", "recent_obs_count_5"),0) or 0)
     sofr99_iorb = _safe(_v(f, "SOFR99-IORB spread", "last"))
     sofr99_pct = _safe(_v(f, "SOFR99-IORB spread", "percentile_1y"))
     sofr99_z = _safe(_v(f, "SOFR99-IORB spread", "zscore_1y"))
@@ -187,8 +189,15 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     dxy_break = dxy is not None and dxy < 96 and cftc_down >= 60
     out.append({"id":"dxy_positioning_break","side":"CONFIRM","status":"TRIGGERED" if dxy_break else "NOT_TRIGGERED","condition":"DXY <96 and CFTC USD-downside pressure >=60","action":"Treat dollar weakness as positioning-confirmed rather than spot noise."})
 
+    prev_by={str(t.get("id")):t for t in (previous_triggers or [])}
+    prev_repo_status=str((prev_by.get("repo_or_swap_stress") or {}).get("status") or "NOT_TRIGGERED")
+    prev_norm_status=str((prev_by.get("repo_stress_normalized") or {}).get("status") or "NOT_TRIGGERED")
+    prior_repo_active = prev_repo_status in {"TRIGGERED","RECOVERING"} or prev_norm_status=="RECOVERING"
     repo_break = (sofr_iorb is not None and sofr_iorb > 0.10) or swaps >= 1000 or fima >= 1000
-    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":"TRIGGERED" if repo_break else "NOT_TRIGGERED","condition":"Median SOFR-IORB >10bp OR central-bank liquidity swaps >=$1B OR FIMA foreign-official repo >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity until plumbing normalizes.","central_bank_swaps_mn":swaps,"fima_repo_mn":fima})
+    repo_recovery = bool(prior_repo_active and sofr_recent_count>=3 and sofr_recent_le3>=3 and swaps < 250 and fima < 250)
+    repo_status = "TRIGGERED" if repo_break else ("RECOVERING" if prior_repo_active and not repo_recovery else "NOT_TRIGGERED")
+    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":repo_status,"condition":"Median SOFR-IORB >10bp OR central-bank liquidity swaps >=$1B OR FIMA foreign-official repo >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity and trim BTC/unhedged ex-US risk. A swap/FIMA draw is not a signal to add non-USD exposure.","central_bank_swaps_mn":swaps,"fima_repo_mn":fima,"prior_active":prior_repo_active})
+    out.append({"id":"repo_stress_normalized","side":"KILL","status":"TRIGGERED" if repo_recovery else ("RECOVERING" if prior_repo_active and not repo_break else "NOT_TRIGGERED"),"condition":"Only after prior funding stress: SOFR-IORB <=3bp on >=3 recent observations AND swaps < $250M AND FIMA < $250M","action":"Only after a previously active funding-stress episode has normalized, step down the funding overlay gradually; do not cut liquidity merely because current SOFR-IORB is below the entry threshold.","prior_active":prior_repo_active,"recent_obs_le_3bp":sofr_recent_le3,"recent_obs_count":sofr_recent_count})
 
     tail_confirm = bool(sofr99_iorb is not None and sofr99_iorb >= 0.10 and ((sofr99_pct or 0)>=95 or (sofr99_z or 0)>=2.0) and sofr99_recent10>=2)
     tail_watch = bool(sofr99_iorb is not None and sofr99_iorb >= 0.08 and ((sofr99_pct or 0)>=85 or (sofr99_z or 0)>=1.25))

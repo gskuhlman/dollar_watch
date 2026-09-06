@@ -1,6 +1,25 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V2.8
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.0
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
+
+
+## V3.0 correctness / feature-freeze release
+
+V3.0 keeps the six-regime model frozen and closes the remaining policy-verification, trigger-state, portfolio-direction and buyback-field consistency gaps.
+
+### New in V3.0
+
+- **Route-aware official-source retrieval.** Treasury/White House/Fed/MOF claims are routed toward actual press releases, statements, speeches and policy pages; privacy/help/financial-assistance pages are rejected before semantic ranking.
+- **Narrow falsifiable standing probes.** Research questions now ask testable propositions such as whether Treasury advocates broad dollar depreciation, supports a strong/stable dollar, or frames stablecoins as strengthening the dollar's reserve role.
+- **Bidirectional approved policy evidence.** Human-approved + source-relevant + LLM-SUPPORTED primary evidence can move managed-devaluation policy intent either up or down. INCONCLUSIVE/CONTRADICTED checks are not automatically inverted.
+- **Critical coverage from approved evidence.** Managed-devaluation critical coverage can now rise when approved policy evidence exists rather than staying mechanically at zero.
+- **Stateful funding hysteresis.** Funding stress enters above the hard stress thresholds; the new normalization KILL is valid only after a prior stress episode and requires persistent normalization.
+- **Correct swap-line direction.** Large central-bank dollar-swap/FIMA usage is treated as dollar-funding stress: more T-bills/liquidity, less BTC/unhedged ex-US risk—not a reason to add non-USD exposure.
+- **Funding-squeeze hedge classes.** Scenario alignment distinguishes direct, conditional/unreliable, USD-denominated rate-sensitive and vulnerable assets.
+- **Long-end buyback capacity reconciliation.** Completed long-end capacity and upcoming capacity are separately scoped; the legacy `long_end_max_amount` field can no longer contradict known completed capacity.
+- **V3.0 regression suite.** `test_v30.py` locks these behaviors.
+
+V3.0 is intended as the **feature-freeze baseline**. Future work should prioritize live calibration, forecast/decision performance, and data-source upgrades rather than adding new regimes.
 
 ## V2.8 cleanup / freeze release
 
@@ -39,7 +58,7 @@ V2.8 keeps the six-regime model unchanged and fixes the remaining localized data
 
 The interactive app automatically saves one `AUTO_STREAMLIT` record per unique live-data timestamp. Manual saves are `MANUAL`; the headless collector uses `SCHEDULED_COLLECTOR`. Legacy records are labeled rather than silently pretending they belong to the current schema.
 
-## V2.8 risk regimes
+## V3.0 risk regimes
 
 Each is an independent **0–100 risk index, not a probability**:
 
@@ -142,7 +161,7 @@ Open `http://<docker-host>:8501`. SQLite data persist in `./data`.
 python collector.py
 ```
 
-The V2.8 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
+The V3.0 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
 
 ```text
 DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
@@ -173,14 +192,14 @@ python test_v26.py
 python test_v27.py
 ```
 
-The V2.8 regression suite additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
+The V3.0 regression stack additionally covers TreasuryDirect buyback-result URL generation across daylight-saving/standard time, fallback result discovery, separation of median repo stress from repo-tail stress, honest offshore-dollar funding coverage, persisted primary-source verification checks and claim-relevance ranking. Earlier V2.2–V2.4 correctness tests remain in the package.
 
 ## Important limitations
 
 - Auction absorption is now restored from official FiscalData, but **true auction tails** still require a dependable live when-issued yield source; bid-to-cover/bidder mix are not the same as a tail.
 - FX option risk reversals, cross-currency basis and deep Treasury order-book data are still high-priority institutional-data additions.
 - `check_source_url()` validates reachability and source class only; it does **not** prove a claim is true. High-impact facts must still be verified against the source before they are marked VERIFIED.
-- TIC and COFER are lagged by design; V2.8 discounts that lag rather than pretending the data are current.
+- TIC and COFER are lagged by design; V3.0 discounts that lag rather than pretending the data are current.
 - Stress-test returns are explicit scenario assumptions, not forecasts.
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 
