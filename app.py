@@ -644,7 +644,7 @@ with health_tab:
         fc2.metric("Offshore funding coverage",f"{fcd.get('offshore_funding_coverage',0):.0f}%")
         fc3.metric("Effective regime coverage",f"{fcd.get('effective',0):.0f}%")
         if fcd.get('offshore_gap'): st.warning(fcd.get('offshore_gap'))
-        offshore_meta=snap.get("offshore_usd_funding_meta",{}) or {}
+        offshore_meta=snapshot.get("offshore_usd_funding_meta",{}) or {}
         proxy_pairs=offshore_meta.get("pairs",[]) or []
         if proxy_pairs:
             st.write("**Indicative offshore FX-forward dislocation proxy**")
