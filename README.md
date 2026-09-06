@@ -1,14 +1,14 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V2.1
+# dollar_watch — Dollar Crisis Early Warning Dashboard V2.2
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## Why V2.1 exists
+## Why V2.2 exists
 
-The first V2 red-team run exposed exactly the weaknesses the app is supposed to find: a relative regime mix could be mistaken for a probability, stale TIC data could contribute too much, fiscal-duration stress was mixed together with inflation, a positioning unwind could masquerade as fundamental dollar weakness, a stablecoin warning was inconsistent with its displayed universe, and tiny mathematical portfolio changes were being presented as trades.
+The V2.1 red-team run showed that the architecture was substantially better, but it also found two correctness defects and several decision-quality gaps: Treasury auction ingestion failed with HTTP 400 because the collector requested brittle/incorrect field names; yield-bearing tokenized Treasury products such as USDY/USYC could be misread as $1 stablecoins; source dates could appear ahead of the dashboard clock; the LLM did not receive a true previous snapshot; and portfolio explanations were still boilerplate.
 
-V2.1 changes the analytical foundation rather than merely adding charts.
+V2.2 fixes those issues without changing the six-regime framework.
 
-## V2.1 risk regimes
+## V2.2 risk regimes
 
 Each is an independent **0–100 risk index, not a probability**:
 
@@ -21,22 +21,30 @@ Each is an independent **0–100 risk index, not a probability**:
 
 The dashboard also reports **Early Warning**, **Market Confirmation**, **Data Confidence**, and a normalized **regime mix explicitly labeled NOT A PROBABILITY**.
 
-## Major V2.1 changes
+## Major V2.2 changes
 
-- **Freshness is applied before scoring.** TIC, COFER, CFTC, fiscal, auction and stablecoin inputs are confidence-discounted before they enter regime math.
-- **COFER freshness uses the observation quarter**, not the time the API call happened.
-- **Verified-evidence gate.** Analyst inputs affect hard scores only when marked VERIFIED and backed by a classified source URL. Unverified/headline/AI findings remain visible but cannot silently change the policy score.
-- **Source provenance and tiers.** Primary sources, major news, research and other sources are labeled; URL reachability is explicitly not treated as factual verification. A claim-verification assistant can compare a claim against the cited page using the configured local LLM, but a human must still mark the evidence VERIFIED.
-- **CFTC FX squeeze detector.** Crowded foreign-currency shorts are classified separately from fundamental USD-downside positioning.
-- **Stablecoin peg bug fixed.** The alert and displayed maximum deviation use the exact same >$1B USD-stablecoin universe.
-- **Actionable trade floor.** Default new-position minimum is 2% and default actionable trade minimum is $1,000; token trades are suppressed.
-- **Machine-readable reversal/confirmation triggers.** 10Y/30Y auction pair rules, fiscal+inflation confirmation, foreign-demand breaks, DXY/CFTC confirmation, repo/swap stress, term-premium normalization and dollar-strength reversal.
-- **Repo internals.** SOFR-IORB, SOFR99-IORB, TGCR-IORB and TGCR dispersion are derived from FRED series. FRED change windows are calendar-based so weekly H.4.1 data are not accidentally measured over 63 weeks when labeled “3m.”
-- **Fiscal-flow module.** Monthly Treasury Statement receipts/outlays/deficit data are parsed into an auditable fiscal stress component.
-- **IMF COFER module.** USD reserve-share data are used as a lagged confirmation source and discounted for age.
-- **Fed H.4.1 decomposition.** Total assets, Treasury holdings, MBS, lending, central-bank swaps, identified assets and residual assets are shown separately so a WALCL change is not automatically called QE.
-- **Portfolio stress tests now cover all six regimes.**
-- **LLM prompt hardened.** New claims must be labeled unverified, conflicting evidence must be surfaced, source/staleness limits must be discussed, and the model is explicitly told that risk indexes are not probabilities.
+### Correctness / data plumbing
+
+- **Treasury auction collector rebuilt.** Historical auction results no longer send a brittle `fields=` list. The app fetches Treasury's returned schema, normalizes legacy/current aliases locally (including `announcemt_date`), paginates safely, and keeps failed-source state distinct from a benign zero reading.
+- **Dedicated upcoming-auctions endpoint.** Future catalysts use Treasury FiscalData's `upcoming_auctions` table rather than assuming the historical results table is the calendar.
+- **Transactional stablecoins separated from tokenized Treasury/RWA products.** USDY/USYC/OUSG/BUIDL-like products can count as structural digital-dollar/Treasury demand, but accumulating NAV above $1 is never treated as a depeg solely because price != $1.
+- **Future-dated observations are data-hygiene flags.** FRED historical rows ahead of the machine date are filtered; any other source date that remains ahead is marked `SOURCE_DATE_AHEAD`, age-clamped to zero and confidence-discounted rather than treated as extra-fresh.
+- **FRED change windows remain calendar-based.** Daily, weekly and monthly series use approximately 7/30/91/365 calendar-day comparisons.
+
+### Analysis quality
+
+- **True run-to-run LLM context.** The red-team model receives the prior saved scores, triggers, portfolio, market/FRED summaries, auctions/flows and explicit regime deltas. “What Changed” no longer has to be inferred only from rolling-return fields.
+- **Rate-path wording hardened.** The LLM is explicitly told that `2Y Treasury > current SOFR` is a carry/rate-path signal, not proof of Fed hike pricing because term/risk premia also matter.
+- **Automatic verification queue.** Current headlines are converted to prioritized claims-to-check with preferred primary-source families. They remain discovery leads until explicitly verified.
+- **Evidence-based portfolio rationale.** The `Why` column now cites the top live regime indices and active causal drivers, and explains why the asset belongs in the current decision. Generic “highest regime is X” boilerplate was removed.
+
+### V2.1 foundations retained
+
+- Six independent risk regimes: managed devaluation, fiscal/Treasury supply stress, inflation/debasement, dollar funding squeeze, reserve-confidence crisis and FX positioning squeeze.
+- Freshness/confidence is applied before TIC/COFER/CFTC/fiscal/auction/stablecoin inputs enter hard scoring.
+- Verified-evidence gate: unverified headlines/AI findings cannot silently change hard policy scores.
+- Source tiers/provenance and LLM claim-vs-cited-source checking.
+- SOFR-IORB/SOFR99-IORB/TGCR plumbing, fiscal flows, COFER, Fed balance-sheet decomposition, machine reversal triggers, anti-chasing, minimum position/trade rules and six-regime stress testing.
 
 ## Data sources
 
@@ -103,7 +111,7 @@ Open `http://<docker-host>:8501`. SQLite data persist in `./data`.
 python collector.py
 ```
 
-The V2.1 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
+The V2.2 collector evaluates all six risk regimes, machine triggers, guarded portfolio actions and alerts. A webhook can be configured with:
 
 ```text
 DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
@@ -129,14 +137,14 @@ python test_engine.py
 python test_v2.py
 ```
 
-The V2.1 tests cover TIC parsing, CFTC positioning, FX squeeze detection, stablecoin peg-universe consistency, source-verification gates, freshness-before-scoring, fiscal-flow parsing, COFER period freshness, machine triggers, six-regime scoring, minimum trade/position constraints and six scenario stress tests.
+The V2.2 tests cover TIC parsing, CFTC positioning, FX squeeze detection, auction-schema normalization, transactional-stablecoin vs tokenized-RWA classification, future-source-date hygiene, prior-run LLM context deltas, source-verification gates, freshness-before-scoring, fiscal-flow parsing, COFER period freshness, machine triggers, six-regime scoring, evidence-based portfolio rationale, minimum trade/position constraints and six scenario stress tests.
 
 ## Important limitations
 
-- True auction tails still require a dependable live when-issued yield source.
+- Auction absorption is now restored from official FiscalData, but **true auction tails** still require a dependable live when-issued yield source; bid-to-cover/bidder mix are not the same as a tail.
 - FX option risk reversals, cross-currency basis and deep Treasury order-book data are still high-priority institutional-data additions.
 - `check_source_url()` validates reachability and source class only; it does **not** prove a claim is true. High-impact facts must still be verified against the source before they are marked VERIFIED.
-- TIC and COFER are lagged by design; V2.1 now discounts that lag rather than pretending the data are current.
+- TIC and COFER are lagged by design; V2.2 discounts that lag rather than pretending the data are current.
 - Stress-test returns are explicit scenario assumptions, not forecasts.
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 

@@ -9,7 +9,9 @@ from dollar_dashboard.portfolio import recommend, scenario_stress_test, ASSETS
 from dollar_dashboard.evidence import effective_evidence_value, classify_source
 from dollar_dashboard.triggers import evaluate_triggers
 from dollar_dashboard.fiscal import summarize_fiscal
-from dollar_dashboard.intelligence import period_last_date
+from dollar_dashboard.data import _normalize_auction_frame
+from dollar_dashboard.llm import compact_previous_context
+from dollar_dashboard.intelligence import period_last_date, build_data_health
 
 
 def _unverified_overrides():
@@ -51,6 +53,9 @@ def test_stablecoin_summary_same_universe_bugfix():
         {"name":"Tether","symbol":"USDT","peg_type":"peggedUSD","circulating_usd":180e9,"price":1.0},
         {"name":"USD Coin","symbol":"USDC","peg_type":"peggedUSD","circulating_usd":70e9,"price":0.9988},
         {"name":"USD1","symbol":"USD1","peg_type":"peggedUSD","circulating_usd":4e9,"price":1.0},
+        # Yield-bearing/tokenized Treasury products can intentionally trade above $1 NAV and must never be treated as depegged stablecoins.
+        {"name":"Ondo U.S. Dollar Yield","symbol":"USDY","peg_type":"peggedUSD","circulating_usd":2e9,"price":1.142},
+        {"name":"Hashnote US Yield Coin","symbol":"USYC","peg_type":"peggedUSD","circulating_usd":1.5e9,"price":1.08},
         # Tiny token with a large deviation must not create the >$1B alert or displayed max.
         {"name":"Tiny","symbol":"TINY","peg_type":"peggedUSD","circulating_usd":5e6,"price":0.80},
     ])
@@ -59,7 +64,41 @@ def test_stablecoin_summary_same_universe_bugfix():
     assert meta["usd1_supply"] == 4e9
     assert abs(meta["max_large_stablecoin_deviation_pct"] - 0.12) < 0.01
     assert meta["large_depeg_symbols"] == []
+    assert meta["tokenized_rwa_supply"] == 3.5e9
+    assert {x["symbol"] for x in meta["rwa_products"]} == {"USDY", "USYC"}
     assert 0 <= support <= 100
+
+
+def test_auction_schema_normalization_legacy_and_current_aliases():
+    raw=pd.DataFrame([{
+        "record_date":"2026-08-31","cusip":"912TEST01","security_type":"Note","security_term":"10-Year",
+        "original_security_term":"10-Year","announcemt_date":"2026-08-27","auction_date":"2026-08-31","issue_date":"2026-09-02",
+        "reopening":"No","bid_to_cover_ratio":"2.55","comp_accepted":"42000000000","total_accepted_amt":"42500000000",
+        "primary_dealer_accepted":"5000000000","direct_bidder_accepted":"3000000000","indirect_bidder_accepted":"34000000000",
+    }])
+    out=_normalize_auction_frame(raw)
+    assert out.iloc[0]["term_key"] == "10-Year"
+    assert str(out.iloc[0]["announcement_date"].date()) == "2026-08-27"
+    assert abs(out.iloc[0]["dealer_share"] - (5/42*100)) < 0.01
+    assert abs(out.iloc[0]["indirect_share"] - (34/42*100)) < 0.01
+
+
+def test_future_source_date_is_flagged_not_extra_fresh():
+    future=pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=2)
+    health,conf=build_data_health({"Future source":{"ok":True,"weight":1.0,"last_date":future,"notes":"test"}})
+    row=health.iloc[0]
+    assert row["freshness"] == "source date ahead"
+    assert row["age_days"] == 0
+    assert row["confidence"] == 75
+    assert "SOURCE_DATE_AHEAD" in row["data_hygiene_flag"]
+
+
+def test_previous_run_context_has_true_deltas():
+    prev={"_captured_at":"2026-09-05T12:00:00Z","scores":{"regimes":{"FX positioning squeeze":40}},"market_summary":{"DXY":{"last":100}}}
+    cur_scores={"regimes":{"FX positioning squeeze":57.3}}
+    ctx=compact_previous_context(prev,{"timestamp":"2026-09-06T12:00:00Z"},cur_scores)
+    assert ctx["regime_delta_to_current"]["FX positioning squeeze"] == 17.3
+    assert ctx["market_summary"]["DXY"]["last"] == 100
 
 
 def test_evidence_verification_gate():
@@ -125,7 +164,7 @@ def test_v21_scoring_and_portfolio():
     assert 0 <= s["confirmation_index"] <= 100
     base={a:0 for a in ASSETS}
     base.update({"T-bills / cash equivalents":25,"TIPS":20,"Gold":15,"Developed ex-US equities (unhedged)":17.5,"US real-asset / value equities":10,"CHF / defensive FX":7.5,"Bitcoin":5})
-    df,meta=recommend(s["regimes"],base,100000,market_summary=snapshot["market_summary"],confidence=s["confidence"],min_trade_pct=1,min_position_pct=2,min_trade_dollars=1000)
+    df,meta=recommend(s["regimes"],base,100000,market_summary=snapshot["market_summary"],confidence=s["confidence"],min_trade_pct=1,min_position_pct=2,min_trade_dollars=1000,score_details=s)
     assert abs(df["Recommended %"].sum()-100)<0.2
     assert meta["one_way_turnover_pct"] <= 25.0001
     # No new token position should appear below 2%, and no actionable trade below $1,000.
@@ -133,12 +172,15 @@ def test_v21_scoring_and_portfolio():
     assert new_commodity["Recommended %"] == 0 or new_commodity["Recommended %"] >= 2
     actionable=df[df["Action"]!="HOLD"]
     assert actionable.empty or actionable["Trade $"].abs().min() >= 1000
+    assert df["Why"].str.contains("Top risks:").all()
+    assert not df["Why"].str.contains("highest absolute risk index is").any()
     stress=scenario_stress_test(dict(zip(df["Asset"],df["Recommended %"])))
     assert len(stress)==6
 
 
 if __name__ == "__main__":
     test_tic_parser(); test_cftc_summary_and_squeeze(); test_stablecoin_summary_same_universe_bugfix()
+    test_auction_schema_normalization_legacy_and_current_aliases(); test_future_source_date_is_flagged_not_extra_fresh(); test_previous_run_context_has_true_deltas()
     test_evidence_verification_gate(); test_stale_confidence_applied_before_scoring(); test_fiscal_summary()
     test_cofer_period_freshness_date(); test_machine_triggers(); test_v21_scoring_and_portfolio()
-    print("v2.1 tests passed")
+    print("v2.2 tests passed")

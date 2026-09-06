@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.1 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.2 (+local research dashboard)"}
 BASE = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service"
 MTS_SUMMARY = f"{BASE}/v1/accounting/mts/mts_receipts_outlays_deficit_surplus"
 MTS_TABLE2 = f"{BASE}/v1/accounting/mts/mts_table_2"

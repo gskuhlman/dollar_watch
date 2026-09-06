@@ -152,10 +152,51 @@ def _remove_token_positions(base: dict[str,float], rec: dict[str,float], min_pos
     return out, notes
 
 
+
+_DRIVER_KEY = {
+    "Managed dollar devaluation": "managed_devaluation",
+    "Fiscal / Treasury supply stress": "fiscal_treasury",
+    "Inflation / monetary debasement": "inflation_debasement",
+    "Dollar funding squeeze": "dollar_squeeze",
+    "Reserve-confidence crisis": "reserve_confidence",
+    "FX positioning squeeze": "fx_positioning_squeeze",
+}
+
+
+def _asset_rationale(asset: str, action: str, regime_scores: dict[str, float], score_details: dict | None,
+                     market_summary: dict | None, delta: float, actionable_pct: float) -> str:
+    ranked = sorted(regime_scores.items(), key=lambda kv: kv[1], reverse=True)
+    top = ranked[:2]
+    bits = [f"{name} {value:.0f}/100" for name, value in top]
+    drivers = []
+    if score_details:
+        all_drivers = score_details.get("drivers", {}) or {}
+        for name, _value in top:
+            for d in all_drivers.get(_DRIVER_KEY.get(name, ""), [])[:2]:
+                if d not in drivers:
+                    drivers.append(str(d))
+    if action == "HOLD":
+        decision = f"No modeled shift clears the {actionable_pct:.1f}pp actionable threshold"
+    else:
+        decision = f"Model target changes by {delta:+.1f}pp after confidence, turnover and anti-chasing guardrails"
+    asset_context = {
+        "T-bills / cash equivalents": "Liquidity/optionality protects a dollar-funding squeeze and keeps dry powder for later confirmation.",
+        "TIPS": "Inflation linkage helps if fiscal stress broadens into realized/expected inflation without taking full long-nominal duration risk.",
+        "Gold": "Non-sovereign monetary hedge is most useful for reserve-confidence/debasement risk but can be expensive after a large run.",
+        "Developed ex-US equities (unhedged)": "Combines productive foreign assets with non-USD currency exposure; vulnerable in a global funding squeeze.",
+        "US real-asset / value equities": "Pricing power/real assets help moderate inflation but can suffer if rates or credit stress dominate.",
+        "Broad commodities / energy": "Useful mainly when inflation/debasement or real-asset scarcity is confirmed; poor hedge in a funding squeeze.",
+        "CHF / defensive FX": "Direct non-USD defensive currency exposure; SNB reaction and short-covering can dominate short-term moves.",
+        "Bitcoin": "Small convex monetary hedge, but behaves like high-beta liquidity risk in many funding shocks.",
+    }[asset]
+    evidence = f" Active evidence: {'; '.join(drivers)}." if drivers else " No high-confidence causal driver beyond the regime indices is active."
+    return f"{decision}. Top risks: {', '.join(bits)}. {asset_context}{evidence}"
+
 def recommend(
     regime_scores: dict[str, float], baseline: dict[str, float], portfolio_value: float,
     min_trade_pct: float = 2.0, market_summary: dict | None = None, confidence: float = 100.0,
     max_turnover_pct: float = 25.0, min_position_pct: float = 2.0, min_trade_dollars: float = 1000.0,
+    score_details: dict | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     base = {a: float(baseline.get(a, 0)) for a in ASSETS}
     total_base = sum(base.values())
@@ -214,16 +255,7 @@ def recommend(
             action = "REDUCE"
         else:
             action = "HOLD"
-        role = {
-            "T-bills / cash equivalents": "liquidity / dollar-squeeze defense",
-            "TIPS": "inflation-linked real-rate defense",
-            "Gold": "non-sovereign monetary hedge",
-            "Developed ex-US equities (unhedged)": "foreign currency + productive assets",
-            "US real-asset / value equities": "pricing power / domestic real assets",
-            "Broad commodities / energy": "inflation / real-asset sensitivity",
-            "CHF / defensive FX": "direct non-USD defensive currency",
-            "Bitcoin": "small convex monetary/liquidity hedge",
-        }[a]
+        why = _asset_rationale(a, action, regime_scores, score_details, market_summary, delta, actionable_pct)
         rows.append({
             "Asset": a,
             "Current %": round(base[a], 1),
@@ -233,7 +265,7 @@ def recommend(
             "Recommended $": round(portfolio_value * rec[a] / 100, 0),
             "Trade $": round(trade_dollars, 0),
             "Action": action,
-            "Why": f"{role}; highest absolute risk index is {dominant}.",
+            "Why": why,
             "Reversal trigger": REVERSAL_TRIGGERS[a],
         })
     df = pd.DataFrame(rows)

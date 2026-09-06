@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from .data import (
-    fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions,
+    fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions, fetch_upcoming_treasury_auctions,
     summarize_auction_stress, summarize_upcoming_auctions,
 )
 from .intelligence import (
@@ -66,14 +66,28 @@ def collect_live_bundle() -> dict[str, Any]:
     try:
         auctions = fetch_treasury_auctions()
         auction_summary, auction_stress = summarize_auction_stress(auctions)
-        upcoming = summarize_upcoming_auctions(auctions)
-        bundle["auctions"] = auctions; bundle["auction_summary"] = auction_summary; bundle["auction_stress"] = auction_stress; bundle["upcoming_auctions"] = upcoming
-        # For auction source freshness, use latest completed/announced record rather than future auction date.
+        bundle["auctions"] = auctions; bundle["auction_summary"] = auction_summary; bundle["auction_stress"] = auction_stress
         last = auctions["record_date"].max() if not auctions.empty and "record_date" in auctions else None
-        status["Treasury auctions"] = {"ok": not auctions.empty, "weight": 1.2, "last_date": last, "notes": "Bid-to-cover, bidder mix, and announced catalysts"}
+        status["Treasury auctions"] = {
+            "ok": not auctions.empty, "weight": 1.2, "last_date": last,
+            "notes": "Historical results via schema-normalized FiscalData: bid-to-cover and bidder mix",
+        }
     except Exception as e:
-        bundle["auctions"] = pd.DataFrame(); bundle["auction_summary"] = pd.DataFrame(); bundle["auction_stress"] = 0.0; bundle["upcoming_auctions"] = pd.DataFrame()
-        status["Treasury auctions"] = {"ok": False, "weight": 1.2, "error": str(e)}
+        bundle["auctions"] = pd.DataFrame(); bundle["auction_summary"] = pd.DataFrame(); bundle["auction_stress"] = 0.0
+        status["Treasury auctions"] = {"ok": False, "weight": 1.2, "error": str(e), "notes": "Absence of auction data is NOT benign-auction evidence"}
+
+    try:
+        upcoming_raw = fetch_upcoming_treasury_auctions(days=35)
+        upcoming = summarize_upcoming_auctions(upcoming_raw, days=35)
+        bundle["upcoming_auctions"] = upcoming
+        last = upcoming_raw["record_date"].max() if not upcoming_raw.empty and "record_date" in upcoming_raw else pd.Timestamp.now(tz="UTC")
+        status["Treasury upcoming auctions"] = {
+            "ok": not upcoming.empty, "weight": 0.35, "last_date": last,
+            "notes": "Dedicated upcoming_auctions endpoint; catalyst calendar only, not a stress score",
+        }
+    except Exception as e:
+        bundle["upcoming_auctions"] = pd.DataFrame()
+        status["Treasury upcoming auctions"] = {"ok": False, "weight": 0.35, "error": str(e), "notes": "Historical auction scoring can still operate if this calendar feed fails"}
 
     try:
         cftc = fetch_cftc_tff()
@@ -121,11 +135,15 @@ def collect_live_bundle() -> dict[str, Any]:
         stable_assets, stable_hist = fetch_stablecoins()
         stable_focus, stable_meta, stable_support = summarize_stablecoins(stable_assets, stable_hist)
         bundle["stable_assets"] = stable_assets; bundle["stable_hist"] = stable_hist; bundle["stable_focus"] = stable_focus
+        bundle["stable_rwa"] = pd.DataFrame(stable_meta.get("rwa_products", []))
         bundle["stable_meta"] = stable_meta; bundle["stable_support"] = stable_support
         last = stable_hist["date"].max() if not stable_hist.empty and "date" in stable_hist else pd.Timestamp.now(tz="UTC")
-        status["Stablecoin supply"] = {"ok": not stable_assets.empty, "weight": 0.8, "last_date": last, "notes": "Digital-dollar structural demand proxy; peg warning uses same displayed >$1B universe"}
+        status["Stablecoin supply"] = {
+            "ok": not stable_assets.empty, "weight": 0.8, "last_date": last,
+            "notes": "Transactional stablecoins are peg-tested separately from tokenized Treasury/RWA products",
+        }
     except Exception as e:
-        bundle["stable_assets"] = pd.DataFrame(); bundle["stable_hist"] = pd.DataFrame(); bundle["stable_focus"] = pd.DataFrame()
+        bundle["stable_assets"] = pd.DataFrame(); bundle["stable_hist"] = pd.DataFrame(); bundle["stable_focus"] = pd.DataFrame(); bundle["stable_rwa"] = pd.DataFrame()
         bundle["stable_meta"] = {}; bundle["stable_support"] = 0.0
         status["Stablecoin supply"] = {"ok": False, "weight": 0.8, "error": str(e)}
 

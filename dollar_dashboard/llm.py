@@ -5,6 +5,31 @@ import os
 import requests
 
 
+
+def compact_previous_context(prev: dict | None, current_snapshot: dict, current_scores: dict) -> dict:
+    """Compact prior-run context so a red-team model can make true run-to-run comparisons."""
+    if not prev:
+        return {}
+    previous_scores = prev.get("scores", {}) or {}
+    regime_delta = {}
+    for name, value in current_scores.get("regimes", {}).items():
+        old = previous_scores.get("regimes", {}).get(name)
+        if old is not None:
+            regime_delta[name] = round(float(value) - float(old), 2)
+    return {
+        "captured_at": prev.get("_captured_at", prev.get("timestamp")),
+        "scores": previous_scores,
+        "machine_triggers": prev.get("machine_triggers", []),
+        "portfolio": prev.get("portfolio", []),
+        "market_summary": prev.get("market_summary", {}),
+        "fred_summary": prev.get("fred_summary", {}),
+        "auction_summary": prev.get("auction_summary", []),
+        "cftc_summary": prev.get("cftc_summary", []),
+        "tic_summary": prev.get("tic_summary", []),
+        "regime_delta_to_current": regime_delta,
+        "current_timestamp": current_snapshot.get("timestamp"),
+    }
+
 def analyze_with_local_llm(
     payload: dict,
     base_url: str | None = None,
@@ -38,7 +63,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.1.
+    system = """You are the red-team macro analyst for dollar_watch V2.2.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -52,6 +77,10 @@ Evidence rules are strict:
 - If you introduce a factual claim not present in the supplied verified evidence, label it UNVERIFIED and exclude it from the recommendation.
 - Explicitly discount stale components using confidence_adjustments.
 - Regime scores are 0-100 risk indices, NOT probabilities. regime_mix_not_probability is descriptive only.
+- If previous_run is supplied, use it for true run-to-run comparisons; do not infer "what changed" solely from 1w/1m/3m market fields.
+- A 2Y Treasury yield above current SOFR is a carry/rate-path signal, NOT by itself proof that the market prices hikes; term/risk premia also matter.
+- Tokenized Treasury/RWA products (for example accumulating-NAV structures) are not automatically $1-pegged stablecoins. Use the supplied asset classification.
+- A FAILED source means missing evidence, not a benign zero reading.
 
 Prioritize causal mechanisms, fiscal flows, policy actors, foreign actors, Treasury/repo plumbing,
 positioning, structural dollar supports, and disconfirming evidence. Distinguish duration/supply stress

@@ -3,6 +3,21 @@
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
 
 
+## V2.2 — Completed from second red-team review
+
+- [x] Rebuild Treasury auction ingestion without brittle `fields=` requests; normalize legacy/current FiscalData field aliases locally.
+- [x] Add dedicated Treasury `upcoming_auctions` catalyst feed independent of historical results scoring.
+- [x] Treat auction-feed failure as missing evidence, never as benign zero-stress evidence.
+- [x] Separate transactional $1 stablecoins from yield-bearing/tokenized Treasury-RWA products before peg testing.
+- [x] Track tokenized Treasury/RWA supply as a distinct structural digital-dollar/Treasury-demand channel.
+- [x] Filter future-dated FRED historical observations and flag any remaining source-date-ahead condition in Data Health.
+- [x] Pass prior saved snapshot context and explicit regime deltas to the local LLM for true run-to-run analysis.
+- [x] Prevent the red-team prompt from treating `2Y > SOFR` alone as proof of Fed hike pricing.
+- [x] Add a prioritized headline verification queue with preferred primary-source families.
+- [x] Replace boilerplate portfolio `Why` text with live regime/driver-based rationale.
+- [x] Add regression tests for auction schema aliases, RWA/stablecoin classification, future source-date hygiene, prior-run deltas and rationale output.
+
+
 ## V2.1 — Completed from first red-team review
 
 - [x] Split fiscal/Treasury supply stress from inflation/monetary debasement.
@@ -75,7 +90,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [x] **IMF COFER USD reserve-share ingestion.** USD share and lag-aware confidence are implemented. [ ] Add fuller EUR/CNY decomposition and FX-valuation adjustment.
 - [ ] **Stablecoin Treasury-demand estimator.** Apply issuer-specific reserve composition instead of treating supply as a generic dollar-demand proxy.
 - [ ] **Stablecoin issuer concentration / redemption risk.** USDT, USDC, USD1 and others scored for reserve/custodian/peg concentration.
-- [ ] **Tokenized Treasury/RWA monitoring.** On-chain Treasury funds as another structural source of dollar demand.
+- [x] **Tokenized Treasury/RWA monitoring baseline.** Separate RWA products from stablecoins and track observed supply. [ ] Add issuer-specific reserve/on-chain composition and flows.
 - [ ] **Automatic policy-document ingestion.** Treasury/Fed/White House/CEA/USTR speeches and releases parsed directly, not through headlines.
 - [ ] **Actor statement-change detection.** Compare current wording with each actor's prior statements and identify shifts in policy language.
 - [ ] **Financial-disclosure change monitor.** Track new public disclosures for senior officials and relevant business/economic interests while keeping exposure separate from motive claims.
@@ -131,7 +146,7 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] **LLM structured output.** JSON schema for thesis, counter-thesis, trades, confidence and reversal triggers.
 - [ ] **LLM ensemble.** Optional second local model as independent red-team reviewer.
 - [ ] **Manual “known fact” lock.** Facts can be marked verified so headline noise cannot overwrite them.
-- [ ] **Investigation queue.** Automatically creates research TODOs when a signal jumps without an identified cause.
+- [x] **Headline verification queue baseline.** Prioritized claims-to-check with primary-source hints. [ ] Extend to signal-jump investigation TODOs when a quantitative indicator moves without an identified cause.
 
 ## P3 — Useful / experimental / lower-priority features
 

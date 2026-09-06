@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.1 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.2 (+local research dashboard)"}
 
 CFTC_DATASET = "gpe5-46if"  # Traders in Financial Futures - futures only
 CFTC_ENDPOINTS = [
@@ -275,6 +275,25 @@ def _circulating_usd(asset: dict[str, Any]) -> float:
     return _num(circ)
 
 
+TOKENIZED_RWA_SYMBOLS = {
+    # Conservative known set. Name heuristics catch additional Treasury/money-market products;
+    # avoid a broad symbol denylist that could misclassify a genuine transactional stablecoin.
+    "USYC", "USDY", "OUSG", "BUIDL", "BENJI", "USTB",
+}
+TOKENIZED_RWA_NAME_HINTS = (
+    "treasury", "government securities", "government money", "money market",
+    "short duration", "yield coin", "institutional digital liquidity",
+)
+
+
+def _digital_dollar_class(row: pd.Series) -> str:
+    symbol = str(row.get("symbol", "")).upper().strip()
+    name = str(row.get("name", "")).lower().strip()
+    if symbol in TOKENIZED_RWA_SYMBOLS or any(h in name for h in TOKENIZED_RWA_NAME_HINTS):
+        return "TOKENIZED_TREASURY_RWA"
+    return "TRANSACTIONAL_STABLECOIN"
+
+
 def fetch_stablecoins() -> tuple[pd.DataFrame, pd.DataFrame]:
     r = requests.get(STABLECOINS_URL, headers=UA, timeout=20)
     r.raise_for_status()
@@ -290,6 +309,8 @@ def fetch_stablecoins() -> tuple[pd.DataFrame, pd.DataFrame]:
             "price": _num(a.get("price")),
         })
     asset_df = pd.DataFrame(rows)
+    if not asset_df.empty:
+        asset_df["asset_class"] = asset_df.apply(_digital_dollar_class, axis=1)
 
     hist_df = pd.DataFrame()
     try:
@@ -323,16 +344,38 @@ def _hist_return(hist: pd.DataFrame, days: int) -> float:
 
 
 def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any], float]:
+    """Summarize digital-dollar demand without treating accumulating Treasury tokens as $1 pegs.
+
+    DefiLlama's USD-pegged universe can contain yield-bearing/tokenized-RWA products such as
+    USDY or USYC. Those products are economically relevant to dollar/Treasury demand, but a
+    price above $1 can be intentional NAV accumulation rather than a depeg. V2.2 therefore
+    separates transactional stablecoins from tokenized Treasury/RWA products before applying
+    any peg-stability rule.
+    """
     if assets.empty:
         return pd.DataFrame(), {}, 0.0
     usd = assets[assets["peg_type"].astype(str).str.contains("USD", case=False, na=False)].copy()
     if usd.empty:
         usd = assets.copy()
-    usd = usd.sort_values("circulating_usd", ascending=False)
-    focus = usd[usd["symbol"].astype(str).str.upper().isin(["USDT", "USDC", "USD1", "DAI", "PYUSD", "FDUSD", "USDS"])].copy()
+    if "asset_class" not in usd.columns:
+        usd["asset_class"] = usd.apply(_digital_dollar_class, axis=1)
+
+    transactional = usd[usd["asset_class"].eq("TRANSACTIONAL_STABLECOIN")].copy()
+    rwa = usd[usd["asset_class"].eq("TOKENIZED_TREASURY_RWA")].copy()
+    transactional = transactional.sort_values("circulating_usd", ascending=False)
+    rwa = rwa.sort_values("circulating_usd", ascending=False)
+
+    focus_symbols = ["USDT", "USDC", "USD1", "DAI", "PYUSD", "FDUSD", "USDS", "USDE", "FRAX", "USDP"]
+    focus = transactional[transactional["symbol"].astype(str).str.upper().isin(focus_symbols)].copy()
     if focus.empty:
-        focus = usd.head(10).copy()
-    total = float(pd.to_numeric(usd["circulating_usd"], errors="coerce").sum())
+        focus = transactional.head(10).copy()
+
+    transactional_supply = float(pd.to_numeric(transactional["circulating_usd"], errors="coerce").sum())
+    rwa_supply = float(pd.to_numeric(rwa["circulating_usd"], errors="coerce").sum())
+    digital_usd_supply = transactional_supply + rwa_supply
+
+    # Historical aggregate is a broad DefiLlama USD-pegged universe. It may include RWA products,
+    # so label it broad digital-dollar growth rather than pure transactional-stablecoin growth.
     r30 = _hist_return(hist, 30)
     r90 = _hist_return(hist, 90)
     r365 = _hist_return(hist, 365)
@@ -340,35 +383,45 @@ def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.
     reasons = []
     if pd.notna(r90):
         if r90 > 0.05:
-            support += 12; reasons.append("Stablecoin supply up >5% over ~3 months")
+            support += 12; reasons.append("Broad digital-dollar supply up >5% over ~3 months")
         if r90 > 0.10:
-            support += 10; reasons.append("Stablecoin supply up >10% over ~3 months")
+            support += 10; reasons.append("Broad digital-dollar supply up >10% over ~3 months")
         if r90 < -0.05:
-            support -= 10; reasons.append("Stablecoin supply down >5% over ~3 months")
+            support -= 10; reasons.append("Broad digital-dollar supply down >5% over ~3 months")
     if pd.notna(r365) and r365 > 0.20:
-        support += 12; reasons.append("Stablecoin supply up >20% YoY")
-    # Peg instability reduces confidence in stablecoins as structural dollar support.
-    # Explicitly calculate the displayed max deviation from the SAME filtered universe used for alerts.
-    prices = pd.to_numeric(usd["price"], errors="coerce")
-    circ = pd.to_numeric(usd["circulating_usd"], errors="coerce").fillna(0)
+        support += 12; reasons.append("Broad digital-dollar supply up >20% YoY")
+    if rwa_supply > 1e9:
+        support += 3; reasons.append("Tokenized Treasury/RWA dollar products exceed $1B")
+
+    # Only transactional $1-intended stablecoins are eligible for peg warnings. Yield-accumulating
+    # RWA products are shown separately and NEVER interpreted as a depeg solely from price != $1.
+    prices = pd.to_numeric(transactional["price"], errors="coerce")
+    circ = pd.to_numeric(transactional["circulating_usd"], errors="coerce").fillna(0)
     eligible = (circ > 1e9) & prices.notna()
     deviations = prices[eligible].sub(1).abs()
     max_depeg = float(deviations.max()) if not deviations.empty else 0.0
     depeg = eligible & (prices.sub(1).abs() > 0.01)
-    depeg_symbols = usd.loc[depeg, "symbol"].astype(str).tolist() if depeg.any() else []
+    depeg_symbols = transactional.loc[depeg, "symbol"].astype(str).tolist() if depeg.any() else []
     if depeg.any():
         support -= min(15.0, 5.0 * int(depeg.sum()))
-        reasons.append(f">$1B USD stablecoin depeg >1%: {', '.join(depeg_symbols)}")
+        reasons.append(f">$1B transactional stablecoin depeg >1%: {', '.join(depeg_symbols)}")
+
     support = float(max(0, min(100, support)))
     usd1 = focus[focus["symbol"].astype(str).str.upper().eq("USD1")]
+    rwa_cols = [c for c in ["name", "symbol", "circulating_usd", "price", "asset_class"] if c in rwa.columns]
     meta = {
-        "usd_stablecoin_supply": total,
+        "usd_stablecoin_supply": transactional_supply,
+        "transactional_stablecoin_supply": transactional_supply,
+        "tokenized_rwa_supply": rwa_supply,
+        "broad_digital_usd_supply": digital_usd_supply,
         "30d_growth": r30,
         "90d_growth": r90,
         "1y_growth": r365,
+        "growth_universe_note": "DefiLlama broad USD-pegged history; may include tokenized RWA products",
         "usd1_supply": None if usd1.empty else float(usd1.iloc[0]["circulating_usd"]),
         "max_large_stablecoin_deviation_pct": 100.0 * max_depeg,
         "large_depeg_symbols": depeg_symbols,
+        "rwa_products": rwa[rwa_cols].head(20).where(pd.notnull(rwa[rwa_cols].head(20)), None).to_dict(orient="records") if not rwa.empty else [],
         "reasons": reasons,
     }
     return focus, meta, support
@@ -499,7 +552,8 @@ def period_last_date(period: str | None):
 def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.DataFrame, float]:
     """Create auditable source-health table and overall confidence score.
 
-    Expected status item fields: ok, weight, last_date, error, notes.
+    Future-dated source observations are a data-hygiene warning, not evidence of extraordinary
+    freshness. They are age-clamped to zero, explicitly flagged, and confidence-discounted.
     """
     rows = []
     weighted = 0.0
@@ -512,23 +566,36 @@ def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.Data
         freshness = "unknown"
         freshness_factor = 0.8 if ok else 0.0
         age_days = np.nan
+        hygiene_flag = ""
         if pd.notna(last_date):
-            age_days = float((now - last_date).total_seconds() / 86400)
-            if age_days <= 2:
-                freshness = "fresh"; freshness_factor = 1.0
-            elif age_days <= 10:
-                freshness = "normal lag"; freshness_factor = 0.9
-            elif age_days <= 45:
-                freshness = "stale"; freshness_factor = 0.65
+            raw_age_days = float((now - last_date).total_seconds() / 86400)
+            if raw_age_days < -0.5:
+                age_days = 0.0
+                freshness = "source date ahead"
+                freshness_factor = 0.75 if ok else 0.0
+                hygiene_flag = f"SOURCE_DATE_AHEAD by {abs(raw_age_days):.1f}d"
             else:
-                freshness = "very stale"; freshness_factor = 0.35
+                age_days = max(0.0, raw_age_days)
+                if age_days <= 2:
+                    freshness = "fresh"; freshness_factor = 1.0
+                elif age_days <= 10:
+                    freshness = "normal lag"; freshness_factor = 0.9
+                elif age_days <= 45:
+                    freshness = "stale"; freshness_factor = 0.65
+                else:
+                    freshness = "very stale"; freshness_factor = 0.35
         score = 100.0 * freshness_factor if ok else 0.0
         weighted += weight * score
         total_w += weight
+        notes = str(info.get("notes", "") or "")
+        if hygiene_flag:
+            notes = (notes + " | " if notes else "") + hygiene_flag
         rows.append({
             "source": name, "status": "OK" if ok else "FAILED", "last_date": last_date,
             "age_days": age_days, "freshness": freshness, "confidence": score,
-            "error": info.get("error", ""), "notes": info.get("notes", ""),
+            "data_hygiene_flag": hygiene_flag,
+            "error": info.get("error", ""), "notes": notes,
         })
     overall = weighted / total_w if total_w else 0.0
     return pd.DataFrame(rows), float(overall)
+

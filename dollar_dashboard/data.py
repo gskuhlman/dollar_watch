@@ -8,9 +8,12 @@ from typing import Dict, Iterable
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
+try:
+    import yfinance as yf
+except ImportError:  # allows offline/unit tests of non-market collectors
+    yf = None
 
-UA = {"User-Agent": "dollar_watch/2.1 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.2 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -81,6 +84,8 @@ def _returns(s: pd.Series) -> dict:
 
 
 def fetch_market_history(period: str = "2y") -> tuple[pd.DataFrame, pd.DataFrame]:
+    if yf is None:
+        raise ImportError("yfinance is required for the market-price collector; install requirements.txt")
     tickers = list(MARKET_TICKERS.values())
     raw = yf.download(
         tickers=tickers,
@@ -117,6 +122,11 @@ def fetch_fred_series(series_id: str, start: str | None = None) -> pd.Series:
     date_col, value_col = df.columns[0], df.columns[1]
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    # A source occasionally exposes a dated observation that is ahead of the machine clock.
+    # Do not silently let a future row become the dashboard's 'latest' historical observation.
+    # Data-health also flags any source-date-ahead condition that survives another collector.
+    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    df = df[df[date_col].isna() | (df[date_col] <= today)]
     s = df.dropna().set_index(date_col)[value_col].sort_index()
     s.name = series_id
     return s
@@ -181,45 +191,131 @@ def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataF
 
 
 TREASURY_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
+TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/upcoming_auctions"
+
+# FiscalData's auction table contains long-standing legacy spellings (for example
+# announcemt_date) and has changed some display/data-dictionary names over time.
+# V2.2 deliberately fetches the returned schema rather than sending a brittle fields= list
+# that causes the entire request to fail with HTTP 400 when one name is wrong.
+_AUCTION_ALIASES = {
+    "record_date": ["record_date"],
+    "cusip": ["cusip"],
+    "security_type": ["security_type", "type"],
+    "security_term": ["security_term", "security_term_week_year", "term"],
+    "original_security_term": ["original_security_term"],
+    "announcement_date": ["announcement_date", "announcemt_date"],
+    "auction_date": ["auction_date"],
+    "issue_date": ["issue_date"],
+    "reopening": ["reopening"],
+    "bid_to_cover_ratio": ["bid_to_cover_ratio"],
+    "comp_accepted": ["comp_accepted", "competitive_accepted_amt", "competitive_accepted"],
+    "total_accepted": ["total_accepted", "total_accepted_amt"],
+    "primary_dealer_accepted": ["primary_dealer_accepted", "primary_dealer_accepted_amt"],
+    "direct_bidder_accepted": ["direct_bidder_accepted", "direct_bidder_accepted_amt"],
+    "indirect_bidder_accepted": ["indirect_bidder_accepted", "indirect_bidder_accepted_amt"],
+    "dealer_share_api": ["primary_dealer_pct_accepted"],
+    "direct_share_api": ["direct_bid_pct_accepted", "direct_bidder_pct_accepted"],
+    "indirect_share_api": ["indirect_bid_pct_accepted", "indirect_bidder_pct_accepted"],
+}
+
+
+def _fiscaldata_pages(url: str, params: dict, page_size: int = 1000, max_pages: int = 20) -> tuple[list[dict], dict]:
+    rows: list[dict] = []
+    meta: dict = {}
+    page = 1
+    while page <= max_pages:
+        q = dict(params)
+        q["page[size]"] = min(int(page_size), 10000)
+        q["page[number]"] = page
+        q.setdefault("format", "json")
+        r = requests.get(url, params=q, headers=UA, timeout=25)
+        if r.status_code == 400:
+            # Return enough context to make a future schema/API change diagnosable from Data Health.
+            body = (r.text or "")[:1200]
+            raise requests.HTTPError(f"FiscalData HTTP 400 for {r.url}: {body}", response=r)
+        r.raise_for_status()
+        obj = r.json()
+        batch = obj.get("data", []) or []
+        meta = obj.get("meta", {}) or {}
+        rows.extend(batch)
+        total = meta.get("total-count", meta.get("total_count"))
+        try:
+            total = int(total)
+        except Exception:
+            total = None
+        if not batch or len(batch) < q["page[size]"] or (total is not None and len(rows) >= total):
+            break
+        page += 1
+    return rows, meta
+
+
+def _first_existing(df: pd.DataFrame, aliases: list[str]) -> pd.Series:
+    for name in aliases:
+        if name in df.columns:
+            return df[name]
+    return pd.Series([np.nan] * len(df), index=df.index, dtype="object")
+
+
+def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame(index=raw.index)
+    for canonical, aliases in _AUCTION_ALIASES.items():
+        out[canonical] = _first_existing(raw, aliases)
+    numeric = [
+        "bid_to_cover_ratio", "comp_accepted", "total_accepted",
+        "primary_dealer_accepted", "direct_bidder_accepted", "indirect_bidder_accepted",
+        "dealer_share_api", "direct_share_api", "indirect_share_api",
+    ]
+    for c in numeric:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in ["record_date", "announcement_date", "auction_date", "issue_date"]:
+        out[c] = pd.to_datetime(out[c], errors="coerce")
+
+    # Prefer direct percentage fields when FiscalData supplies them. Otherwise calculate
+    # bidder shares against competitive accepted tenders, matching Treasury result PDFs.
+    denom = out["comp_accepted"].replace(0, np.nan)
+    out["dealer_share"] = out["dealer_share_api"]
+    out["direct_share"] = out["direct_share_api"]
+    out["indirect_share"] = out["indirect_share_api"]
+    for share, accepted in [
+        ("dealer_share", "primary_dealer_accepted"),
+        ("direct_share", "direct_bidder_accepted"),
+        ("indirect_share", "indirect_bidder_accepted"),
+    ]:
+        calc = 100.0 * out[accepted] / denom
+        out[share] = out[share].where(out[share].notna(), calc)
+
+    orig = out["original_security_term"].astype("string")
+    term = out["security_term"].astype("string")
+    out["term_key"] = orig.where(orig.notna() & orig.str.len().gt(0) & ~orig.str.lower().eq("null"), term)
+    return out
 
 
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
-    """Fetch official Treasury auction results from FiscalData (no API key required)."""
-    fields = [
-        "record_date", "cusip", "security_type", "security_term", "original_security_term",
-        "announcement_date", "auction_date", "issue_date", "reopening", "bid_to_cover_ratio", "comp_accepted", "total_accepted",
-        "primary_dealer_accepted", "direct_bidder_accepted", "indirect_bidder_accepted",
-    ]
+    """Fetch official Treasury auction results without a brittle fields= query.
+
+    FiscalData returns the full auction schema; V2.2 normalizes legacy/current aliases locally.
+    This prevents a single renamed or misspelled API field from turning the auction channel off.
+    """
     params = {
-        "fields": ",".join(fields),
         "filter": f"auction_date:gte:{start}",
         "sort": "-auction_date",
-        "page[size]": page_size,
-        "format": "json",
     }
-    r = requests.get(TREASURY_AUCTIONS_URL, params=params, headers=UA, timeout=20)
-    r.raise_for_status()
-    data = r.json().get("data", [])
-    df = pd.DataFrame(data)
-    if df.empty:
-        return df
-    for c in ["bid_to_cover_ratio", "comp_accepted", "total_accepted", "primary_dealer_accepted", "direct_bidder_accepted", "indirect_bidder_accepted"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ["record_date", "announcement_date", "auction_date", "issue_date"]:
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
-    denom = df.get("comp_accepted")
-    if denom is not None:
-        df["dealer_share"] = 100 * df.get("primary_dealer_accepted", 0) / denom.replace(0, np.nan)
-        df["direct_share"] = 100 * df.get("direct_bidder_accepted", 0) / denom.replace(0, np.nan)
-        df["indirect_share"] = 100 * df.get("indirect_bidder_accepted", 0) / denom.replace(0, np.nan)
-    term = df.get("original_security_term")
-    if term is not None:
-        df["term_key"] = term.where(term.notna() & (term.astype(str).str.len() > 0), df.get("security_term"))
-    else:
-        df["term_key"] = df.get("security_term")
-    return df
+    data, _meta = _fiscaldata_pages(TREASURY_AUCTIONS_URL, params, page_size=page_size)
+    return _normalize_auction_frame(pd.DataFrame(data))
+
+
+def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd.DataFrame:
+    """Fetch Treasury's dedicated upcoming-auctions table and normalize it for the UI."""
+    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    end = today + pd.Timedelta(days=days)
+    params = {
+        "filter": f"auction_date:gte:{today.date()},auction_date:lte:{end.date()}",
+        "sort": "auction_date",
+    }
+    data, _meta = _fiscaldata_pages(TREASURY_UPCOMING_AUCTIONS_URL, params, page_size=page_size, max_pages=5)
+    return _normalize_auction_frame(pd.DataFrame(data))
 
 
 def summarize_auction_stress(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:

@@ -16,7 +16,7 @@ from dollar_dashboard.storage import (
     add_event, recent_events, save_alerts, recent_alerts,
 )
 from dollar_dashboard.alerts import generate_alerts
-from dollar_dashboard.llm import analyze_with_local_llm, verify_claim_against_source
+from dollar_dashboard.llm import analyze_with_local_llm, verify_claim_against_source, compact_previous_context
 from dollar_dashboard.triggers import evaluate_triggers
 from dollar_dashboard.evidence import classify_source, check_source_url, fetch_source_text
 
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V2.1", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V2.2", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -42,6 +42,32 @@ def fmt_money(v):
     if abs(v)>=1e9: return f"${v/1e9:.1f}B"
     if abs(v)>=1e6: return f"${v/1e6:.1f}M"
     return f"${v:,.0f}"
+
+
+PRIMARY_SOURCE_HINTS = {
+    "Fed / Warsh": "federalreserve.gov / newyorkfed.org",
+    "Treasury / Bessent": "home.treasury.gov / newyorkfed.org",
+    "FX intervention": "home.treasury.gov / newyorkfed.org / mof.go.jp / boj.or.jp",
+    "BRICS / de-dollarization": "official BRICS communiqué / member central bank or finance ministry",
+    "China": "pbc.gov.cn / safe.gov.cn",
+    "Central-bank gold": "relevant central bank; WGC as secondary research",
+    "Funding stress": "federalreserve.gov / newyorkfed.org",
+    "Stablecoins": "issuer reserve/attestation page + Treasury/Fed/SEC if policy-related",
+}
+
+
+def build_verification_queue(news_df: pd.DataFrame, max_rows: int = 30) -> pd.DataFrame:
+    if news_df is None or news_df.empty:
+        return pd.DataFrame()
+    q = news_df.head(max_rows).copy()
+    q["claim"] = q["title"].astype(str)
+    priority_map = {"FX intervention":"P0","Treasury / Bessent":"P0","Fed / Warsh":"P0","Funding stress":"P0","BRICS / de-dollarization":"P1","China":"P1","Central-bank gold":"P1","Stablecoins":"P1"}
+    q["priority"] = q["bucket"].astype(str).map(lambda b: priority_map.get(b,"P2"))
+    q["source_tier"] = q["link"].astype(str).map(lambda u: classify_source(u).get("source_tier", "UNSOURCED"))
+    q["preferred_verification_source"] = q["bucket"].astype(str).map(lambda b: PRIMARY_SOURCE_HINTS.get(b, "primary government/central-bank source if available"))
+    q["verification_status"] = "UNVERIFIED"
+    cols = [c for c in ["priority","bucket","claim","source","published","source_tier","preferred_verification_source","verification_status","link"] if c in q.columns]
+    return q.sort_values(["priority","published"],ascending=[True,False],na_position="last")[cols]
 
 
 def deterministic_analysis(scores, portfolio_df, news_class, prev=None):
@@ -77,7 +103,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.1")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.2")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -113,6 +139,7 @@ portfolio_df,portfolio_meta=recommend(
     scores["regimes"],baseline,portfolio_value,min_trade_pct=min_trade,
     market_summary=snapshot.get("market_summary",{}),confidence=scores.get("confidence",100),
     max_turnover_pct=max_turnover,min_position_pct=min_position,min_trade_dollars=min_trade_dollars,
+    score_details=scores,
 )
 history=recent_snapshots(150); prev=history[0] if history else None
 current_alerts=generate_alerts(scores,portfolio_df,prev,float(DEFAULT_SETTINGS.get("alert_threshold_points",8)),triggers=machine_triggers)
@@ -133,7 +160,7 @@ meta_cols[3].metric("Phase",scores["phase"])
 st.info("**Interpretation:** regime values are absolute 0–100 risk indices. Any normalized regime mix shown below is descriptive only and must not be read as a crisis probability.")
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.1 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.2 Roadmap"
 ])
 
 with exec_tab:
@@ -171,9 +198,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V2.1 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V2.2 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload); save_alerts(current_alerts); st.success(f"Saved V2.1 snapshot #{rid}")
+        rid=save_snapshot(payload); save_alerts(current_alerts); st.success(f"Saved V2.2 snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -256,19 +283,26 @@ with flows_tab:
         co[2].metric("COFER pressure",f"{bundle.get('cofer_pressure',0):.0f}/100")
         if not bundle.get("cofer",pd.DataFrame()).empty: st.dataframe(bundle["cofer"].tail(12),width="stretch",hide_index=True)
 
-    st.subheader("Stablecoins / structural digital-dollar demand")
+    st.subheader("Digital dollars: transactional stablecoins vs tokenized Treasury/RWA")
     sm=bundle.get("stable_meta",{})
-    sc=st.columns(4)
-    sc[0].metric("USD stablecoin supply",fmt_money(sm.get("usd_stablecoin_supply")))
-    r90=sm.get("90d_growth"); sc[1].metric("~90d growth","—" if r90 is None or pd.isna(r90) else f"{r90*100:+.1f}%")
-    sc[2].metric("USD1 supply",fmt_money(sm.get("usd1_supply")))
-    sc[3].metric("Max >$1B peg deviation",f"{sm.get('max_large_stablecoin_deviation_pct',0):.2f}%")
-    if not bundle.get("stable_focus",pd.DataFrame()).empty: st.dataframe(bundle["stable_focus"].round(4),width="stretch",hide_index=True)
-    if sm.get("large_depeg_symbols"): st.error("Actual >1% large-stablecoin depeg: "+", ".join(sm["large_depeg_symbols"]))
+    sc=st.columns(5)
+    sc[0].metric("Transactional stablecoins",fmt_money(sm.get("transactional_stablecoin_supply")))
+    sc[1].metric("Tokenized Treasury/RWA",fmt_money(sm.get("tokenized_rwa_supply")))
+    r90=sm.get("90d_growth"); sc[2].metric("Broad digital-USD ~90d","—" if r90 is None or pd.isna(r90) else f"{r90*100:+.1f}%")
+    sc[3].metric("USD1 supply",fmt_money(sm.get("usd1_supply")))
+    sc[4].metric("Max >$1B stablecoin peg deviation",f"{sm.get('max_large_stablecoin_deviation_pct',0):.2f}%")
+    st.caption(sm.get("growth_universe_note","Transactional $1 stablecoins are peg-tested separately from yield-bearing/tokenized Treasury products."))
+    if not bundle.get("stable_focus",pd.DataFrame()).empty:
+        st.write("**Transactional / $1-intended stablecoins**")
+        st.dataframe(bundle["stable_focus"].round(4),width="stretch",hide_index=True)
+    if not bundle.get("stable_rwa",pd.DataFrame()).empty:
+        st.write("**Tokenized Treasury / RWA dollar products — NAV above $1 is not automatically a depeg**")
+        st.dataframe(bundle["stable_rwa"].round(4),width="stretch",hide_index=True)
+    if sm.get("large_depeg_symbols"): st.error("Actual >1% large transactional-stablecoin depeg: "+", ".join(sm["large_depeg_symbols"]))
 
 with policy_tab:
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V2.1 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V2.2 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -341,6 +375,18 @@ with policy_tab:
     events=recent_events(100)
     if events: st.dataframe(pd.DataFrame(events),width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source_url")})
 
+    st.subheader("Automatic verification queue")
+    st.caption("Headlines are converted into claims-to-check, prioritized with a suggested primary-source family. They remain UNVERIFIED until you review a source and explicitly promote the evidence.")
+    verification_queue=build_verification_queue(news_df,30)
+    if verification_queue.empty:
+        st.info("No headline claims are available for verification.")
+    else:
+        st.dataframe(verification_queue,width="stretch",hide_index=True,column_config={"link":st.column_config.LinkColumn("headline link")})
+        selected_claim=st.selectbox("Load a queued claim into the verifier",verification_queue["claim"].tolist(),key="queued_claim_select")
+        selected_row=verification_queue[verification_queue["claim"].eq(selected_claim)].iloc[0]
+        st.caption(f"Preferred source family: {selected_row.get('preferred_verification_source','primary source')} | Headline source tier: {selected_row.get('source_tier','?')}")
+        st.code(str(selected_row.get("claim","")),language=None)
+
     st.subheader("Current headline monitor — triage only")
     if news_df.empty: st.warning("News feed unavailable.")
     else:
@@ -405,8 +451,10 @@ with analysis_tab:
                 "scores":scores,"machine_triggers":machine_triggers,
                 "portfolio_recommendation":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,
                 "snapshot":snapshot,
+                "previous_run":compact_previous_context(prev,snapshot,scores),
                 "verified_analyst_evidence":[{k:v for k,v in e.items()} for e in verified_events],
                 "unverified_evidence_discovery_only":unverified_events,
+                "verification_queue_discovery_only":build_verification_queue(news_df,30).to_dict(orient="records") if not news_df.empty else [],
                 "headline_scores_discovery_only":news_class.get("scores",{}),
                 "headlines_discovery_only":news_df.head(50).to_dict(orient="records") if not news_df.empty else [],
             }
@@ -441,13 +489,15 @@ with health_tab:
     st.subheader("Raw → confidence → effective input")
     if not cad.empty: st.dataframe(cad,width="stretch",hide_index=True)
     st.markdown("""
-### V2.1 evidence rules
+### V2.2 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.
 - **Headlines are triage.** They may guide research but cannot become verified evidence automatically.
 - **Verified analyst evidence needs provenance.** A source being reachable does not prove the claim; verification is an explicit separate state.
 - **Token trades are suppressed.** New positions below the minimum size and trades below the dollar/% threshold are not actionable.
+- **Future-dated observations are hygiene warnings.** They are not treated as extra-fresh data and are confidence-discounted.
+- **RWA tokens are not stablecoins.** Yield-accumulating tokenized Treasury products are separated before $1 peg tests.
 """)
 
 with roadmap_tab:
