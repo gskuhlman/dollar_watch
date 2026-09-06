@@ -14,7 +14,7 @@ from dollar_dashboard.portfolio import recommend, scenario_stress_test, scenario
 from dollar_dashboard.storage import (
     save_snapshot, save_snapshot_if_new, recent_snapshots, get_overrides, set_override, get_setting, set_setting,
     add_event, recent_events, save_alerts, recent_alerts, save_verification_check, recent_verification_checks,
-    upsert_verification_queue, recent_verification_queue, update_verification_queue_check,
+    upsert_verification_queue, recent_verification_queue, update_verification_queue_check, update_verification_queue_approval,
 )
 from dollar_dashboard.alerts import generate_alerts
 from dollar_dashboard.llm import analyze_with_local_llm, verify_claim_against_source, compact_previous_context
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V2.6", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V2.7", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -116,7 +116,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.6")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.7")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -145,7 +145,7 @@ with st.spinner("Collecting markets, FRED/repo, Treasury auctions/fiscal flows, 
 snapshot=bundle["snapshot"]
 news_df=bundle.get("news",pd.DataFrame())
 news_class=classify_news(news_df)
-# V2.6: every complete discovered claim is persisted automatically. Primary-source/LLM checks
+# V2.7: every complete discovered claim is persisted automatically. Primary-source/LLM checks
 # can run automatically for a bounded number of new P0/P1 claims, but never become VERIFIED
 # scoring evidence without explicit human promotion.
 verification_queue_now=build_verification_queue(news_df,30)
@@ -155,16 +155,21 @@ if auto_verify and lm_url and int(auto_verify_limit)>0:
     pending=[q for q in recent_verification_queue(100) if q.get("priority") in {"P0","P1"} and q.get("status") in {"QUEUED","NO_CANDIDATE","ERROR"}]
     for q in pending[:int(auto_verify_limit)]:
         try:
-            cand=discover_primary_evidence(q.get("bucket",""),q.get("claim",""),max_candidates=3)
-            good=next((c for c in cand if c.get("reachable") and float(c.get("relevance_score") or 0)>0),None)
+            cand=discover_primary_evidence(q.get("bucket",""),q.get("claim",""),max_candidates=5)
+            good=next((c for c in cand if c.get("reachable") and c.get("relevance_status")=="RELEVANT"),None)
             if not good:
-                update_verification_queue_check(q["id"],status="NO_CANDIDATE"); continue
+                best=next((c for c in cand if c.get("reachable")),None)
+                if best:
+                    update_verification_queue_check(q["id"],candidate_url=best.get("final_url",best.get("url","")),candidate_tier=best.get("source_tier",""),candidate_relevance=float(best.get("relevance_score") or 0),relevance_status=best.get("relevance_status","IRRELEVANT_SOURCE"),verdict="",explanation="Candidate rejected before LLM verification because it is not semantically relevant to the claim.",status="IRRELEVANT_SOURCE")
+                else:
+                    update_verification_queue_check(q["id"],status="NO_CANDIDATE")
+                continue
             fetched=fetch_source_text(good.get("final_url") or good.get("url"),max_chars=30000)
             if not fetched.get("ok"):
-                update_verification_queue_check(q["id"],candidate_url=good.get("url",""),candidate_tier=good.get("source_tier",""),status="ERROR"); continue
+                update_verification_queue_check(q["id"],candidate_url=good.get("url",""),candidate_tier=good.get("source_tier",""),candidate_relevance=float(good.get("relevance_score") or 0),relevance_status=good.get("relevance_status",""),status="ERROR"); continue
             result=verify_claim_against_source(q.get("claim",""),fetched.get("text",""),fetched.get("final_url",good.get("url","")),base_url=lm_url,model=lm_model or None,timeout_seconds=int(lm_timeout))
             verdict=(result.splitlines()[0].strip().upper() if result else "INCONCLUSIVE")
-            update_verification_queue_check(q["id"],candidate_url=fetched.get("final_url",good.get("url","")),candidate_tier=fetched.get("source_tier",""),verdict=verdict,explanation=result,status="CHECKED")
+            update_verification_queue_check(q["id"],candidate_url=fetched.get("final_url",good.get("url","")),candidate_tier=fetched.get("source_tier",""),candidate_relevance=float(good.get("relevance_score") or 0),relevance_status=good.get("relevance_status",""),verdict=verdict,explanation=result,status="CHECKED")
             save_verification_check(q.get("claim",""),q.get("bucket",""),fetched.get("final_url",good.get("url","")),verdict,result,model=lm_model or "auto")
         except Exception as exc:
             update_verification_queue_check(q["id"],explanation=str(exc),status="ERROR")
@@ -206,7 +211,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.6 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.7 Roadmap"
 ])
 
 with exec_tab:
@@ -246,9 +251,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V2.6 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V2.7 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.6 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.7 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -306,7 +311,7 @@ with market_tab:
         bc[3].metric("Long-end max",fmt_money(bm.get("long_end_max_amount",0)))
         bc[4].metric("Offer / accept",("—" if bm.get("completed_offer_accept_ratio") is None else f"{bm.get('completed_offer_accept_ratio'):.2f}x"))
         bc[5].metric("Result completeness",("—" if bm.get("result_completeness_pct") is None else f"{bm.get('result_completeness_pct'):.0f}%"))
-        bc[6].metric("Policy intensity",f"{bm.get('intensity',0):.0f}/100")
+        bc[6].metric("Policy intensity",("UNKNOWN" if bm.get("intensity") is None else f"{bm.get('intensity'):.0f}/100"))
         st.caption("TreasuryDirect schedule and completed result XMLs are separate. Announced capacity, submitted offers and accepted amounts are shown distinctly. This is debt-management/liquidity-support evidence, not QE or automatic auction-rescue evidence.")
         if not bm.get("results_conclusions_allowed",False): st.warning(f"Buyback result set is {bm.get('result_classification','UNKNOWN')}; execution conclusions are gated. Missing operations are unknown, not zero. Max-amount parse: {bm.get('max_amount_parse_status','UNKNOWN')}.")
         if not bundle.get("buybacks",pd.DataFrame()).empty: st.dataframe(bundle["buybacks"],width="stretch",hide_index=True)
@@ -370,7 +375,7 @@ with flows_tab:
 
 with policy_tab:
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V2.6 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V2.7 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -449,7 +454,28 @@ with policy_tab:
     persisted_queue=pd.DataFrame(recent_verification_queue(100))
     if not persisted_queue.empty:
         st.write("**Persistent auto-populated research queue**")
+        st.caption("Queue rows expose candidate relevance and LLM verdict separately. IRRELEVANT_SOURCE means an official URL was found but rejected before factual verification.")
         st.dataframe(persisted_queue,width="stretch",hide_index=True)
+        reviewable=persisted_queue[persisted_queue["status"].isin(["CHECKED","IRRELEVANT_SOURCE"])] if "status" in persisted_queue.columns else pd.DataFrame()
+        if not reviewable.empty:
+            labels={int(r["id"]):f"#{int(r['id'])} {str(r.get('priority',''))} | {str(r.get('claim',''))[:95]}" for _,r in reviewable.iterrows()}
+            qid=st.selectbox("Human review queue item",list(labels),format_func=lambda x:labels[x],key="verification_human_review")
+            rr=reviewable[reviewable["id"].eq(qid)].iloc[0]
+            st.caption(f"Relevance: {rr.get('relevance_status','?')} ({rr.get('candidate_relevance','?')}) | LLM verdict: {rr.get('llm_verdict','?')} | Approval: {rr.get('approved_status','UNVERIFIED')}")
+            if rr.get("candidate_url"):
+                st.link_button("Open candidate primary source",str(rr.get("candidate_url")),width="stretch")
+            ca,cb,cc=st.columns(3)
+            if ca.button("Approve check",key=f"approve_check_{qid}",width="stretch"):
+                if rr.get("relevance_status")!="RELEVANT":
+                    st.error("Cannot approve: candidate failed the semantic relevance gate.")
+                elif str(rr.get("llm_verdict","")) not in {"SUPPORTED","CONTRADICTED"}:
+                    st.error("Approve only a clear SUPPORTED or CONTRADICTED source check; INCONCLUSIVE remains research-only.")
+                else:
+                    update_verification_queue_approval(int(qid),"APPROVED"); st.success("Source check approved. It remains non-scoring until explicitly promoted into analyst evidence.")
+            if cb.button("Reject check",key=f"reject_check_{qid}",width="stretch"):
+                update_verification_queue_approval(int(qid),"REJECTED"); st.success("Check rejected.")
+            if cc.button("Mark disputed",key=f"dispute_check_{qid}",width="stretch"):
+                update_verification_queue_approval(int(qid),"DISPUTED"); st.success("Check marked disputed.")
     if verification_queue.empty:
         st.info("No headline claims are available for verification.")
     else:
@@ -466,15 +492,18 @@ with policy_tab:
         candidates=st.session_state.get(discovery_key,[])
         if candidates:
             show=pd.DataFrame(candidates)
-            show_cols=[c for c in ["name","source_tier","relevance_score","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
+            show_cols=[c for c in ["name","source_tier","relevance_status","relevance_score","claim_overlap_ratio","bucket_anchor_overlap","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
             st.dataframe(show[show_cols],width="stretch",hide_index=True,column_config={"final_url":st.column_config.LinkColumn("primary source")})
-            st.caption("Discovery is not verification. Candidates are official/source-family pages ranked for relevance to the claim.")
+            st.caption("Discovery is not verification. V2.7 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
             if st.button("LLM-check top primary candidates",width="stretch"):
                 if not lm_url:
                     st.error("Configure the local LLM base URL first.")
                 else:
                     checked=0
-                    for c in [x for x in candidates if x.get("reachable")][:3]:
+                    relevant_candidates=[x for x in candidates if x.get("reachable") and x.get("relevance_status")=="RELEVANT"]
+                    if not relevant_candidates:
+                        st.warning("No candidate passed the V2.7 semantic relevance gate; no LLM claim check was run.")
+                    for c in relevant_candidates[:3]:
                         fetched=fetch_source_text(c.get("final_url") or c.get("url"),max_chars=30000,timeout=12)
                         if not fetched.get("ok"): continue
                         try:
@@ -610,7 +639,7 @@ with health_tab:
         fc3.metric("Effective regime coverage",f"{fcd.get('effective',0):.0f}%")
         if fcd.get('offshore_gap'): st.warning(fcd.get('offshore_gap'))
     st.markdown("""
-### V2.6 evidence rules
+### V2.7 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.

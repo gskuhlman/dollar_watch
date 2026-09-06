@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.6 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.7 (+local research dashboard)"}
 BUYBACK_PAGE = "https://www.treasurydirect.gov/auctions/announcements-data-results/buy-backs/"
 SCHEDULE_XML_URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
 RESULT_DIR = "https://www.treasurydirect.gov/instit/annceresult/press/preanre/{year}/"
@@ -106,7 +106,7 @@ def _normalize_schedule_record(rec: dict) -> dict:
         "operation_type": _first(rec, ["operationType", "buybackType", "type"], ""),
         "security_type": _first(rec, ["securityType"], ""),
         "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
-        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maximumAmount", "maxAmountToBeRedeemed"])),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmountToBeRedeemed", "maximumParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maximumAmount", "maxAmountToBeRedeemed"])),
         "operation_status": _first(rec, ["operationStatus"], "SCHEDULED"),
         "announcement_type": _first(rec, ["announcementType"], ""),
         "source_kind": "SCHEDULE",
@@ -206,7 +206,7 @@ def _normalize_result_xml(content: bytes, source_url: str) -> dict:
         "operation_type": _first(rec, ["operationType", "buybackType"], ""),
         "security_type": _first(rec, ["securityType"], ""),
         "maturity_bucket": _first(rec, ["maturityBucket", "maturitySector", "maturityDateRange"], ""),
-        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"])),
+        "max_amount": _money(_first(rec, ["maxParAmountToBeRedeemed", "maxParAmtToBeRedeemed", "maximumParAmountToBeRedeemed", "maximumParAmtToBeRedeemed", "maximumParAmount", "maximumParAmt", "maxParAmount", "maxParAmt", "maxAmountToBeRedeemed"])),
         "total_offered": _money(_first(rec, ["totalParAmountOffered", "totalAmountOffered"])),
         "total_accepted": _money(_first(rec, ["totalParAmountAccepted", "totalAmountAccepted"])),
         "issues_eligible": pd.to_numeric(_first(rec, ["noIssueEligible", "numberIssuesEligible", "numberOfIssuesEligible"]), errors="coerce"),
@@ -282,7 +282,7 @@ def fetch_buyback_results(schedule: pd.DataFrame, timeout: int = 15, lookback_da
 
 
 def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
-    """V2.6 buyback collector.
+    """V2.7 buyback collector.
 
     The official tentative schedule and completed TreasuryDirect result XMLs are separate evidence
     surfaces. A result-XML failure does not erase a successfully retrieved schedule, and a schedule
@@ -305,9 +305,20 @@ def fetch_buyback_schedule(timeout: int = 25) -> tuple[pd.DataFrame, dict]:
         merged = schedule.copy()
         if not results.empty:
             key = ["operation_date"]
-            rcols = ["operation_date", "total_offered", "total_accepted", "issues_eligible", "issues_accepted", "offer_accept_ratio", "result_url"]
+            rcols = ["operation_date", "operation_start", "operation_type", "security_type", "maturity_bucket", "max_amount", "total_offered", "total_accepted", "issues_eligible", "issues_accepted", "offer_accept_ratio", "result_url"]
             rsmall = results[[c for c in rcols if c in results.columns]].drop_duplicates("operation_date", keep="last")
             merged = merged.merge(rsmall, on="operation_date", how="outer", suffixes=("", "_result"))
+            # Completed result XMLs are authoritative for execution fields.  Coalesce result
+            # maximum capacity and classification fields into the tentative-schedule row; V2.7
+            # prevents dropped result max_amount here, creating a false zero-capacity signal.
+            for col in ["operation_start", "operation_type", "security_type", "maturity_bucket", "max_amount"]:
+                rc=f"{col}_result"
+                if rc in merged.columns:
+                    if col not in merged.columns:
+                        merged[col]=merged[rc]
+                    else:
+                        merged[col]=merged[col].where(merged[col].notna() & merged[col].astype(str).ne(""), merged[rc])
+                    merged=merged.drop(columns=[rc])
             merged["has_result"] = merged.get("result_url").notna()
         else:
             merged["has_result"] = False
@@ -325,8 +336,10 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
             "scheduled_operations": 0,
             "completed_operations": 0,
             "long_end_operations": 0,
-            "long_end_max_amount": 0.0,
-            "intensity": 0.0,
+            "long_end_max_amount": None,
+            "intensity": None,
+            "intensity_status": "UNKNOWN",
+            "max_amount_parse_status": "UNKNOWN_OR_PARSE_FAILED",
             "results_available": False,
         }
     work = df.copy()
@@ -339,8 +352,12 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
     long_completed = completed[long_mask.reindex(completed.index, fill_value=False)]
 
     max_amount = pd.to_numeric(work.get("max_amount"), errors="coerce") if "max_amount" in work else pd.Series(dtype=float)
-    total_max = float(max_amount.fillna(0).sum()) if len(max_amount) else 0.0
-    long_max = float(pd.to_numeric(long_upcoming.get("max_amount"), errors="coerce").fillna(0).sum()) if not long_upcoming.empty and "max_amount" in long_upcoming else 0.0
+    parsed_max_count = int(max_amount.notna().sum()) if len(max_amount) else 0
+    result_max = pd.to_numeric(completed.get("max_amount"), errors="coerce") if not completed.empty and "max_amount" in completed else pd.Series(dtype=float)
+    result_max_count = int(result_max.notna().sum()) if len(result_max) else 0
+    total_max = float(max_amount.dropna().sum()) if parsed_max_count else None
+    long_max_series = pd.to_numeric(long_upcoming.get("max_amount"), errors="coerce") if not long_upcoming.empty and "max_amount" in long_upcoming else pd.Series(dtype=float)
+    long_max = float(long_max_series.dropna().sum()) if int(long_max_series.notna().sum()) else None
 
     offered = float(pd.to_numeric(completed.get("total_offered"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_offered" in completed else 0.0
     accepted = float(pd.to_numeric(completed.get("total_accepted"), errors="coerce").fillna(0).sum()) if not completed.empty and "total_accepted" in completed else 0.0
@@ -349,15 +366,20 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
     result_classification = "COMPLETE" if completeness is not None and completeness >= 80 else ("INCOMPLETE" if completeness is not None else "UNKNOWN_EXPECTED_SET")
     conclusions_allowed = result_classification == "COMPLETE"
 
-    # Policy-response intensity measures announced/used capacity, not market stress or QE.
-    intensity = 0.0
-    if len(long_upcoming):
-        intensity += min(35.0, 8.0 * len(long_upcoming))
-    if long_max >= 4_000_000_000:
-        intensity += 15.0
-    if conclusions_allowed and not long_completed.empty:
-        intensity += min(25.0, 5.0 * len(long_completed))
-    intensity = min(100.0, intensity)
+    # Policy-response intensity requires parsed maximum capacity.  Accepted/offered totals alone
+    # do not reveal whether Treasury used 10%, 50% or 100% of its authorized operation size.
+    # Unknown capacity is therefore UNKNOWN, never numeric zero.
+    max_amount_known = parsed_max_count > 0 and (result_max_count > 0 or len(upcoming) > 0)
+    intensity = None
+    if max_amount_known:
+        intensity = 0.0
+        if len(long_upcoming):
+            intensity += min(35.0, 8.0 * len(long_upcoming))
+        if long_max is not None and long_max >= 4_000_000_000:
+            intensity += 15.0
+        if conclusions_allowed and not long_completed.empty:
+            intensity += min(25.0, 5.0 * len(long_completed))
+        intensity = min(100.0, intensity)
 
     latest_completed = None
     if not completed.empty:
@@ -370,6 +392,8 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "long_end_completed_operations": int(len(long_completed)),
         "total_max_amount": total_max,
         "long_end_max_amount": long_max,
+        "parsed_max_amount_rows": parsed_max_count,
+        "parsed_result_max_amount_rows": result_max_count,
         "completed_total_offered": offered,
         "completed_total_accepted": accepted,
         "completed_offer_accept_ratio": None if offer_accept is None else round(offer_accept, 3),
@@ -378,7 +402,8 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "result_classification": result_classification,
         "results_conclusions_allowed": conclusions_allowed,
         "result_completeness_pct": completeness,
-        "max_amount_parse_status": "OK" if total_max > 0 else "PARSE_FAILED_OR_ZERO",
-        "intensity": round(intensity, 1),
+        "max_amount_parse_status": "OK" if max_amount_known else "UNKNOWN_OR_PARSE_FAILED",
+        "intensity_status": "KNOWN" if intensity is not None else "UNKNOWN",
+        "intensity": None if intensity is None else round(intensity, 1),
         "interpretation": "Treasury debt-management/liquidity-support activity. Not QE and not proof of failed auction demand.",
     }

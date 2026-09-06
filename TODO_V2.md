@@ -235,3 +235,23 @@ These are the next features most likely to improve warning time or portfolio dec
 - [ ] Calibrate trigger thresholds against accumulated and historical event data.
 - [ ] Add dependable cross-currency-basis/FX-swap feeds if a trustworthy accessible source is available.
 - [ ] Replace static scenario asset shocks with empirically estimated regime/event betas after sufficient history exists.
+
+
+## V2.7 completed
+
+- [x] Preserve buyback result maximum capacity through the schedule/results merge.
+- [x] Treat missing buyback capacity/intensity as `UNKNOWN`, not 0.
+- [x] Add deterministic semantic relevance gating before LLM source verification.
+- [x] Persist candidate relevance score/status and human source-check approval state.
+- [x] Add verification queue review controls for APPROVED / REJECTED / DISPUTED checks.
+- [x] Canonicalize reopened coupon maturities to benchmark tenors without conflating TIPS/FRNs.
+- [x] Supplement the upcoming-auction convenience feed from Treasury's full future auction table.
+- [x] Generalize 1Y/3Y historical percentile and z-score context across populated FRED indicators.
+- [x] Add V2.7 regression tests.
+
+## Freeze / observe after V2.7
+
+- [ ] Accumulate live history through Treasury auctions, CFTC updates, TIC/COFER releases and FOMC events before changing the six-regime architecture.
+- [ ] Add dependable cross-currency-basis / FX-swap data only when a trustworthy accessible source is identified.
+- [ ] Calibrate trigger thresholds against historical and newly accumulated event data.
+- [ ] Replace static scenario sensitivities with empirical event/regime betas once enough observations exist.

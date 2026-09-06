@@ -9,7 +9,7 @@ import requests
 
 from .evidence import classify_source, fetch_source_text
 
-UA={"User-Agent":"dollar_watch/2.6 (+local research dashboard)"}
+UA={"User-Agent":"dollar_watch/2.7 (+local research dashboard)"}
 
 # Deterministic primary-source destinations. These do not assert that a claim is true;
 # they put the analyst at the authoritative evidence surface first.
@@ -60,6 +60,52 @@ STOPWORDS={
     'that','this','it','its','as','at','after','before','about','into','over','under','us','u','s','says','said','reportedly',
     'will','would','could','may','might','new','latest','more','less','than','amid','via','has','have','had'
 }
+
+BUCKET_ANCHORS={
+    'FX intervention': {'intervention','exchange','currency','yen','dollar','foreign exchange','esf','fx'},
+    'Treasury / Bessent': {'treasury','buyback','debt','financing','bessent','exchange','currency'},
+    'Fed / Warsh': {'federal reserve','fed','warsh','monetary','rates','balance sheet','fomc'},
+    'Funding stress': {'sofr','repo','fima','swap','liquidity','funding','dollar'},
+    'Central-bank gold': {'gold','reserve','central bank','bullion','repatriation'},
+    'BRICS / de-dollarization': {'brics','payment','settlement','local currency','dedollar','de-dollar','reserve'},
+    'China': {'pboc','safe','yuan','renminbi','reserve','currency','china'},
+    'Stablecoins': {'stablecoin','stablecoins','payment stablecoin','digital asset','digital dollar','genius act','usdc','usdt','usd1'},
+}
+MIN_RELEVANCE_SCORE=35.0
+
+def _anchor_tokens(bucket:str)->set[str]:
+    out=set()
+    for phrase in BUCKET_ANCHORS.get(bucket,set()):
+        out |= _tokens(phrase)
+    return out
+
+def source_relevance(bucket:str,claim:str,text:str,anchor:str='',url:str='')->dict:
+    claim_tokens=_tokens(claim)
+    content_tokens=_tokens((text or '')+' '+(anchor or '')+' '+(url or '').replace('/',' ').replace('-',' '))
+    overlap=claim_tokens & content_tokens
+    ratio=len(overlap)/max(1,len(claim_tokens))
+    bucket_tokens=_anchor_tokens(bucket)
+    bucket_hits=bucket_tokens & content_tokens
+    anchor_score=_anchor_score(claim_tokens,anchor,url)
+    score=min(100.0, 70.0*ratio + min(20.0,7.5*len(bucket_hits)) + min(15.0,2.0*anchor_score))
+    # Official reachability is necessary but not sufficient. Require semantic overlap with
+    # the actual claim plus at least one topic anchor for specialized policy buckets.
+    if len(claim_tokens)<=3:
+        relevant=bool(overlap) and (bool(bucket_hits) if bucket_tokens else True) and score>=MIN_RELEVANCE_SCORE
+    else:
+        relevant=((len(overlap)>=2 and ratio>=0.25) or (len(overlap)>=1 and ratio>=0.15 and len(bucket_hits)>=1))
+        if bucket_tokens and not bucket_hits:
+            relevant=False
+        relevant=bool(relevant and score>=MIN_RELEVANCE_SCORE)
+    return {
+        'relevance_score':round(score,1),
+        'relevance_status':'RELEVANT' if relevant else 'IRRELEVANT_SOURCE',
+        'claim_token_overlap':len(overlap),
+        'claim_overlap_ratio':round(ratio,3),
+        'bucket_anchor_overlap':len(bucket_hits),
+        'matched_claim_tokens':sorted(overlap)[:12],
+        'matched_bucket_tokens':sorted(bucket_hits)[:12],
+    }
 
 
 def primary_source_candidates(bucket:str,claim:str='')->list[dict]:
@@ -144,16 +190,13 @@ def discover_primary_evidence(bucket:str,claim:str,timeout:int=10,max_candidates
     for c in sorted(candidates,key=lambda x:x.get('anchor_score',0),reverse=True)[:max(12,max_candidates*2)]:
         fetched=fetch_source_text(c['url'],max_chars=18000,timeout=timeout)
         text=fetched.get('text','') if fetched.get('ok') else ''
-        content_tokens=_tokens(text)
-        overlap=len(claim_tokens & content_tokens)
-        denom=max(1,len(claim_tokens))
-        relevance=100.0*overlap/denom + 4.0*float(c.get('anchor_score') or 0)
+        rel=source_relevance(bucket,claim,text,c.get('anchor',''),fetched.get('final_url',c['url']))
         excerpt=''
         if text:
             # Prefer a line containing one of the rarer claim tokens.
             lines=[x.strip() for x in text.splitlines() if x.strip()]
             hit=next((x for x in lines if len(_tokens(x)&claim_tokens)>=2),None)
             excerpt=(hit or '\n'.join(lines[:3]))[:700]
-        scored.append({**c,'reachable':bool(fetched.get('ok')),'source_tier':fetched.get('source_tier',classify_source(c['url']).get('source_tier')),'final_url':fetched.get('final_url',c['url']),'relevance_score':round(relevance,1),'claim_token_overlap':overlap,'excerpt':excerpt,'error':fetched.get('error','')})
+        scored.append({**c,'reachable':bool(fetched.get('ok')),'source_tier':fetched.get('source_tier',classify_source(c['url']).get('source_tier')),'final_url':fetched.get('final_url',c['url']),**rel,'excerpt':excerpt,'error':fetched.get('error','')})
     scored.sort(key=lambda x:(bool(x.get('reachable')),float(x.get('relevance_score') or 0)),reverse=True)
     return scored[:max_candidates]

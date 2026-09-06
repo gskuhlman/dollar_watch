@@ -138,7 +138,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     cofer_raw = _safe(snapshot.get("cofer_dedollarization_pressure"))
     fiscal_flow_raw = _safe(snapshot.get("fiscal_flow_stress_auto"))
     stable_raw = _safe(snapshot.get("stablecoin_dollar_support_auto"))
-    buyback_intensity = _safe(_v(snapshot, "treasury_buyback_meta", "intensity"))
+    buyback_intensity = _safe(_v(snapshot, "treasury_buyback_meta", "intensity"), None)
+    buyback_intensity_known = buyback_intensity is not None and str(_v(snapshot, "treasury_buyback_meta", "intensity_status", default="KNOWN")) == "KNOWN"
     buyback_schedule_conf = _conf(snapshot, "buyback_schedule", default=0.0)
     buyback_results_conf = _conf(snapshot, "buyback_results", default=0.0)
     buyback_conf = _conf(snapshot, "buyback", default=0.0)
@@ -214,7 +215,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     fiscal_supply += 0.25 * fiscal_flow
     # Buybacks are a policy-response/liquidity-support signal, not proof of failed demand.
     # Keep the direct score contribution deliberately small; the auction channel remains primary.
-    fiscal_supply += 0.05 * _eff(buyback_intensity, buyback_conf)
+    if buyback_intensity_known:
+        fiscal_supply += 0.05 * _eff(buyback_intensity, buyback_conf)
     fiscal_supply += 0.10 * ov.get("treasury_auction_stress", 0)
     fiscal_supply += 0.10 * ov.get("institutional_credibility_stress", 0)
     fiscal_supply = _clamp(fiscal_supply)
@@ -360,11 +362,11 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "COFER": {"raw": round(cofer_raw,1), "confidence": round(cofer_conf*100,1), "effective": round(cofer_pressure,1)},
         "Fiscal flows": {"raw": round(fiscal_flow_raw,1), "confidence": round(fiscal_conf*100,1), "effective": round(fiscal_flow,1)},
         "Stablecoin support": {"raw": round(stable_raw,1), "confidence": round(stable_conf*100,1), "effective": round(stablecoin_auto,1)},
-        "Treasury buyback schedule": {"raw": round(buyback_intensity,1), "confidence": round(buyback_schedule_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_schedule_conf),1)},
-        "Treasury buyback results": {"raw": round(buyback_intensity,1), "confidence": round(buyback_results_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_results_conf),1)},
+        "Treasury buyback schedule": {"raw": None if not buyback_intensity_known else round(buyback_intensity,1), "confidence": round(buyback_schedule_conf*100,1), "effective": None if not buyback_intensity_known else round(_eff(buyback_intensity,buyback_schedule_conf),1), "status": "KNOWN" if buyback_intensity_known else "UNKNOWN"},
+        "Treasury buyback results": {"raw": None if not buyback_intensity_known else round(buyback_intensity,1), "confidence": round(buyback_results_conf*100,1), "effective": None if not buyback_intensity_known else round(_eff(buyback_intensity,buyback_results_conf),1), "status": "KNOWN" if buyback_intensity_known else "UNKNOWN"},
     }
 
-    # Evidence coverage is separate from risk. V2.6 distinguishes broad/generic coverage from
+    # Evidence coverage is separate from risk. V2.7 distinguishes broad/generic coverage from
     # CRITICAL coverage. Plenty of market data cannot substitute for missing verified policy intent
     # in the managed-devaluation regime, and lots of spot data cannot substitute for stale reserve data.
     def _verified(keys):
@@ -420,7 +422,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             "Inflation / debasement pressure": round(inflation, 1),
             "Treasury / repo / funding plumbing stress": round(plumbing, 1),
             "Institutional credibility stress": round(institutional, 1),
-            "Treasury buyback policy-response intensity": round(_eff(buyback_intensity,buyback_conf),1),
+            "Treasury buyback policy-response intensity": None if not buyback_intensity_known else round(_eff(buyback_intensity,buyback_conf),1),
         },
         "confidence_adjustments": confidence_audit,
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),

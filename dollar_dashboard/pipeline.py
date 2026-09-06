@@ -210,12 +210,15 @@ def collect_live_bundle() -> dict[str, Any]:
         "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
         "buyback_schedule": source_confidence.get("Treasury buyback schedule", 0.0),
         "buyback_results": source_confidence.get("Treasury buyback results", 0.0),
-        "buyback": 0.55*source_confidence.get("Treasury buyback schedule", 0.0) + 0.45*source_confidence.get("Treasury buyback results", 0.0),
+        # Scoring confidence for *intensity* is zero when maximum authorized amounts are unknown,
+        # even though schedule/results data may otherwise be healthy and useful descriptively.
+        "buyback": (0.55*source_confidence.get("Treasury buyback schedule", 0.0) + 0.45*source_confidence.get("Treasury buyback results", 0.0))
+                   if (bundle.get("buyback_meta",{}).get("intensity_status") == "KNOWN") else 0.0,
         "news": source_confidence.get("News discovery", 0.0),
     }
 
     # Cross-currency basis / OTC FX-swap stress is not available from a dependable free
-    # real-time feed in V2.6.  Keep the missing offshore layer explicit so domestic repo
+    # real-time feed in V2.7.  Keep the missing offshore layer explicit so domestic repo
     # coverage can never be mislabeled as 100% observation of global dollar funding.
     offshore_funding_meta = {
         "available": False,

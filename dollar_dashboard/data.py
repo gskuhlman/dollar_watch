@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import StringIO
@@ -13,7 +14,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.6 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.7 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -142,7 +143,7 @@ def fetch_fred_series(series_id: str, start: str | None = None) -> pd.Series:
     return s
 
 
-def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataFrame]:
+def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataFrame]:
     series: Dict[str, pd.Series] = {}
     for label, sid in FRED_SERIES.items():
         try:
@@ -197,7 +198,27 @@ def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataF
             "1y_change": delta_days(365),
         }
 
-    # V2.6 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
+    # V2.7 distributional context for every sufficiently populated FRED series.
+    # This replaces many hand-waved "unusual" labels with the series' own recent history.
+    # Percentiles are descriptive, not automatically directional risk signals.
+    for label in hist.columns:
+        if label not in rows:
+            continue
+        ts=hist[label].dropna()
+        if len(ts) < 12:
+            continue
+        last=float(ts.iloc[-1])
+        for years, suffix in [(1,"1y"),(3,"3y")]:
+            window=ts.loc[ts.index >= (ts.index[-1]-pd.Timedelta(days=365*years))]
+            if len(window) < 12:
+                continue
+            pct=float((window <= last).mean()*100.0)
+            mean=float(window.mean()); std=float(window.std(ddof=0)) if len(window)>1 else 0.0
+            rows[label][f"percentile_{suffix}"]=pct
+            rows[label][f"zscore_{suffix}"]=((last-mean)/std) if std>0 else 0.0
+            rows[label][f"history_obs_{suffix}"]=int(len(window))
+
+    # V2.7 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
     # thing as the median SOFR-IORB spread. Track its own historical extremeness and
     # persistence so the dashboard cannot describe a tail move as being "1bp from"
     # the median funding-stress trigger.
@@ -226,7 +247,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.6 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.7 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -287,6 +308,35 @@ def _first_existing(df: pd.DataFrame, aliases: list[str]) -> pd.Series:
     return pd.Series([np.nan] * len(df), index=df.index, dtype="object")
 
 
+def _canonical_coupon_term(original, term, security_type) -> str:
+    raw=(str(original or '')+' '+str(term or '')).strip()
+    st=str(security_type or '').lower()
+    low=raw.lower()
+    if 'frn' in st or 'floating' in st:
+        return '2-Year FRN' if ('2' in low or not low) else raw
+    if 'tips' in st or 'inflation' in st:
+        m=re.search(r"(\d+)\s*[- ]?year(?:s)?(?:\s+(\d+)\s*[- ]?month)?",low)
+        if m:
+            yrs=float(m.group(1)) + float(m.group(2) or 0)/12.0
+            nearest=min([5,10,30],key=lambda x:abs(x-yrs))
+            return f"{nearest}-Year TIPS"
+        return raw
+    if 'bill' in st:
+        return raw
+    # Exact benchmark label if already exposed.
+    for y in [2,3,5,7,10,20,30]:
+        if re.search(rf"(^|\D){y}\s*[- ]?year",low):
+            return f"{y}-Year"
+    # Reopenings can be expressed by remaining maturity (e.g. 9-Year 11-Month).
+    ym=re.search(r"(\d+)\s*[- ]?year(?:s)?(?:\s+(\d+)\s*[- ]?month)?",low)
+    if ym:
+        yrs=float(ym.group(1)) + (float(ym.group(2) or 0)/12.0)
+        candidates=[2,3,5,7,10,20,30]
+        nearest=min(candidates,key=lambda x:abs(x-yrs))
+        if abs(nearest-yrs) <= 1.25:
+            return f"{nearest}-Year"
+    return str(original or term or '')
+
 def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
@@ -317,16 +367,17 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
         calc = 100.0 * out[accepted] / denom
         out[share] = out[share].where(out[share].notna(), calc)
 
-    orig = out["original_security_term"].astype("string")
-    term = out["security_term"].astype("string")
-    out["term_key"] = orig.where(orig.notna() & orig.str.len().gt(0) & ~orig.str.lower().eq("null"), term)
+    out["term_key"] = [
+        _canonical_coupon_term(o,t,st)
+        for o,t,st in zip(out["original_security_term"],out["security_term"],out["security_type"])
+    ]
     return out
 
 
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
     """Fetch official Treasury auction results without a brittle fields= query.
 
-    FiscalData returns the full auction schema; V2.6 normalizes legacy/current aliases locally.
+    FiscalData returns the full auction schema; V2.7 normalizes legacy/current aliases locally.
     This prevents a single renamed or misspelled API field from turning the auction channel off.
     """
     params = {
@@ -346,15 +397,41 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
 
 
 def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd.DataFrame:
-    """Fetch Treasury's dedicated upcoming-auctions table and normalize it for the UI."""
+    """Fetch upcoming Treasury auctions with a same-source fallback for missing benchmark tenors.
+
+    FiscalData's dedicated upcoming table can lag or label reopenings by remaining maturity.
+    V2.7 canonicalizes terms and supplements it from the full auction table's future placeholders,
+    without ever feeding those placeholders into historical auction stress.
+    """
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
     end = today + pd.Timedelta(days=days)
     params = {
         "filter": f"auction_date:gte:{today.date()},auction_date:lte:{end.date()}",
         "sort": "auction_date",
     }
-    data, _meta = _fiscaldata_pages(TREASURY_UPCOMING_AUCTIONS_URL, params, page_size=page_size, max_pages=5)
-    return _normalize_auction_frame(pd.DataFrame(data))
+    frames=[]
+    try:
+        data, _meta = _fiscaldata_pages(TREASURY_UPCOMING_AUCTIONS_URL, params, page_size=page_size, max_pages=5)
+        frames.append(_normalize_auction_frame(pd.DataFrame(data)))
+    except Exception:
+        pass
+    # Same Treasury/FiscalData source, but the general table often exposes announced future
+    # coupon rows sooner/more completely than the convenience endpoint.
+    try:
+        data2,_meta2=_fiscaldata_pages(TREASURY_AUCTIONS_URL,params,page_size=page_size,max_pages=5)
+        frames.append(_normalize_auction_frame(pd.DataFrame(data2)))
+    except Exception:
+        pass
+    frames=[x for x in frames if x is not None and not x.empty]
+    if not frames:
+        return pd.DataFrame()
+    out=pd.concat(frames,ignore_index=True,sort=False)
+    out["auction_date"]=pd.to_datetime(out["auction_date"],errors="coerce")
+    out=out[(out["auction_date"]>=today)&(out["auction_date"]<=end)]
+    dedupe=[c for c in ["auction_date","term_key","cusip"] if c in out.columns]
+    if dedupe:
+        out=out.drop_duplicates(subset=dedupe,keep="first")
+    return out.sort_values("auction_date").reset_index(drop=True)
 
 
 def summarize_auction_stress(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:

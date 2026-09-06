@@ -104,7 +104,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.6.
+    system = """You are the red-team macro analyst for dollar_watch V2.7.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -115,6 +115,7 @@ Evidence rules are strict:
 - VERIFIED analyst/news evidence may affect conclusions.
 - HEADLINE TRIAGE and UNVERIFIED claims are discovery leads only; do not use them as factual support for a trade.
 - Never convert a reachable URL or source reputation into verification of the claim itself.
+- IRRELEVANT_SOURCE candidates failed the deterministic semantic relevance gate and may not be used as factual support or passed off as inconclusive verification.
 - If you introduce a factual claim not present in the supplied verified evidence, label it UNVERIFIED and exclude it from the recommendation.
 - Explicitly discount stale components using confidence_adjustments.
 - Regime scores are 0-100 risk indices, NOT probabilities. regime_mix_not_probability is descriptive only.

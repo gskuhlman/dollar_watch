@@ -283,9 +283,15 @@ def _ensure_verification_queue(con) -> None:
             updated_at TEXT NOT NULL,
             priority TEXT, bucket TEXT, claim TEXT NOT NULL, headline_source TEXT, headline_url TEXT,
             preferred_source TEXT, status TEXT DEFAULT 'QUEUED', candidate_url TEXT, candidate_tier TEXT,
-            llm_verdict TEXT, llm_explanation TEXT, approved_status TEXT DEFAULT 'UNVERIFIED'
+            candidate_relevance REAL, relevance_status TEXT, llm_verdict TEXT, llm_explanation TEXT, approved_status TEXT DEFAULT 'UNVERIFIED'
         )
     """)
+    # Forward-compatible migration for databases created before V2.7.
+    cols={r[1] for r in con.execute("PRAGMA table_info(verification_queue)").fetchall()}
+    if "candidate_relevance" not in cols:
+        con.execute("ALTER TABLE verification_queue ADD COLUMN candidate_relevance REAL")
+    if "relevance_status" not in cols:
+        con.execute("ALTER TABLE verification_queue ADD COLUMN relevance_status TEXT")
 
 def upsert_verification_queue(rows: list[dict]) -> int:
     import hashlib
@@ -301,10 +307,20 @@ def upsert_verification_queue(rows: list[dict]) -> int:
 
 def recent_verification_queue(limit:int=100) -> list[dict]:
     con=connect(); _ensure_verification_queue(con)
-    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,llm_verdict,llm_explanation,approved_status FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
-    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','llm_verdict','llm_explanation','approved_status']
+    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,llm_explanation,approved_status FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
+    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','candidate_relevance','relevance_status','llm_verdict','llm_explanation','approved_status']
     return [dict(zip(keys,r)) for r in rows]
 
-def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED') -> None:
+def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED',candidate_relevance:float|None=None,relevance_status:str='') -> None:
     con=connect(); _ensure_verification_queue(con)
-    con.execute("UPDATE verification_queue SET updated_at=?,candidate_url=?,candidate_tier=?,llm_verdict=?,llm_explanation=?,status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),candidate_url,candidate_tier,verdict,explanation,status,int(queue_id))); con.commit(); con.close()
+    con.execute("UPDATE verification_queue SET updated_at=?,candidate_url=?,candidate_tier=?,candidate_relevance=?,relevance_status=?,llm_verdict=?,llm_explanation=?,status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),candidate_url,candidate_tier,candidate_relevance,relevance_status,verdict,explanation,status,int(queue_id))); con.commit(); con.close()
+
+
+def update_verification_queue_approval(queue_id:int,approved_status:str) -> None:
+    allowed={"UNVERIFIED","APPROVED","REJECTED","DISPUTED"}
+    status=str(approved_status or "UNVERIFIED").upper()
+    if status not in allowed:
+        raise ValueError(f"Invalid approval status: {status}")
+    con=connect(); _ensure_verification_queue(con)
+    con.execute("UPDATE verification_queue SET updated_at=?,approved_status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),status,int(queue_id)))
+    con.commit(); con.close()
