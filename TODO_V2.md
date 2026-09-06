@@ -3,7 +3,7 @@
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.
 
 
-## V2.2 — Completed from second red-team review
+## V2.3 — Completed from second red-team review
 
 - [x] Rebuild Treasury auction ingestion without brittle `fields=` requests; normalize legacy/current FiscalData field aliases locally.
 - [x] Add dedicated Treasury `upcoming_auctions` catalyst feed independent of historical results scoring.

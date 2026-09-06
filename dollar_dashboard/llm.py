@@ -18,6 +18,9 @@ def compact_previous_context(prev: dict | None, current_snapshot: dict, current_
             regime_delta[name] = round(float(value) - float(old), 2)
     return {
         "captured_at": prev.get("_captured_at", prev.get("timestamp")),
+        "run_id": prev.get("_run_id", prev.get("_id")),
+        "app_version": prev.get("_app_version", prev.get("run_meta",{}).get("app_version")),
+        "schema_version": prev.get("_schema_version", prev.get("run_meta",{}).get("schema_version")),
         "scores": previous_scores,
         "machine_triggers": prev.get("machine_triggers", []),
         "portfolio": prev.get("portfolio", []),
@@ -28,6 +31,8 @@ def compact_previous_context(prev: dict | None, current_snapshot: dict, current_
         "tic_summary": prev.get("tic_summary", []),
         "regime_delta_to_current": regime_delta,
         "current_timestamp": current_snapshot.get("timestamp"),
+        "current_regime_evidence_coverage": current_scores.get("regime_evidence_coverage",{}),
+        "treasury_buyback_meta": current_snapshot.get("treasury_buyback_meta",{}),
     }
 
 def analyze_with_local_llm(
@@ -63,7 +68,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.2.
+    system = """You are the red-team macro analyst for dollar_watch V2.3.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -77,6 +82,8 @@ Evidence rules are strict:
 - If you introduce a factual claim not present in the supplied verified evidence, label it UNVERIFIED and exclude it from the recommendation.
 - Explicitly discount stale components using confidence_adjustments.
 - Regime scores are 0-100 risk indices, NOT probabilities. regime_mix_not_probability is descriptive only.
+- regime_evidence_coverage is separate from risk: low risk + low coverage means uncertainty, not safety.
+- Treasury buybacks are liquidity/policy-response evidence, not by themselves proof of weak demand or QE.
 - If previous_run is supplied, use it for true run-to-run comparisons; do not infer "what changed" solely from 1w/1m/3m market fields.
 - A 2Y Treasury yield above current SOFR is a carry/rate-path signal, NOT by itself proof that the market prices hikes; term/risk premia also matter.
 - Tokenized Treasury/RWA products (for example accumulating-NAV structures) are not automatically $1-pegged stablecoins. Use the supplied asset classification.

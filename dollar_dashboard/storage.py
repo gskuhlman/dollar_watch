@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .evidence import classify_source
+from .run_history import lineage, APP_VERSION, SCHEMA_VERSION
 
 
 def db_path() -> str:
@@ -55,9 +56,19 @@ def connect():
         CREATE TABLE IF NOT EXISTS snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at TEXT NOT NULL,
-            payload TEXT NOT NULL
+            payload TEXT NOT NULL,
+            run_id TEXT,
+            parent_run_id TEXT,
+            app_version TEXT,
+            schema_version TEXT,
+            run_kind TEXT DEFAULT 'ANALYSIS'
         )
     """)
+    _ensure_column(con, "snapshots", "run_id", "TEXT")
+    _ensure_column(con, "snapshots", "parent_run_id", "TEXT")
+    _ensure_column(con, "snapshots", "app_version", "TEXT")
+    _ensure_column(con, "snapshots", "schema_version", "TEXT")
+    _ensure_column(con, "snapshots", "run_kind", "TEXT DEFAULT 'ANALYSIS'")
     con.execute("""
         CREATE TABLE IF NOT EXISTS overrides (
             key TEXT PRIMARY KEY,
@@ -82,18 +93,45 @@ def connect():
     return con
 
 
-def save_snapshot(payload: dict) -> int:
+def save_snapshot(payload: dict, run_kind: str = "ANALYSIS") -> int:
     con = connect()
-    cur = con.execute("INSERT INTO snapshots(captured_at,payload) VALUES (?,?)", (datetime.now(timezone.utc).isoformat(), json.dumps(payload, default=str)))
+    parent = con.execute("SELECT run_id,id FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+    parent_run_id = (parent[0] if parent and parent[0] else (str(parent[1]) if parent else None))
+    meta = lineage(parent_run_id=parent_run_id, run_kind=run_kind)
+    enriched = dict(payload)
+    enriched["run_meta"] = meta
+    cur = con.execute(
+        "INSERT INTO snapshots(captured_at,payload,run_id,parent_run_id,app_version,schema_version,run_kind) VALUES (?,?,?,?,?,?,?)",
+        (meta["captured_at"], json.dumps(enriched, default=str), meta["run_id"], meta["parent_run_id"], APP_VERSION, SCHEMA_VERSION, run_kind),
+    )
     con.commit(); rid = cur.lastrowid; con.close(); return int(rid)
+
+
+def save_snapshot_if_new(payload: dict, source_timestamp: str | None = None, run_kind: str = "AUTO") -> tuple[int|None,bool]:
+    """Save one lineage record per distinct collected snapshot timestamp.
+
+    Streamlit reruns frequently; this prevents UI interactions from manufacturing fake market runs.
+    """
+    con=connect()
+    row=con.execute("SELECT id,payload FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+    if row:
+        try:
+            prior=json.loads(row[1])
+            prior_ts=prior.get("timestamp")
+            if source_timestamp and prior_ts == source_timestamp:
+                con.close(); return int(row[0]),False
+        except Exception:
+            pass
+    con.close()
+    return save_snapshot(payload,run_kind=run_kind),True
 
 
 def recent_snapshots(limit: int = 50) -> list[dict]:
     con = connect()
-    rows = con.execute("SELECT id,captured_at,payload FROM snapshots ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    rows = con.execute("SELECT id,captured_at,payload,run_id,parent_run_id,app_version,schema_version,run_kind FROM snapshots ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     con.close(); out=[]
-    for rid,captured,payload in rows:
-        d=json.loads(payload); d["_id"]=rid; d["_captured_at"]=captured; out.append(d)
+    for rid,captured,payload,run_id,parent_run_id,app_version,schema_version,run_kind in rows:
+        d=json.loads(payload); d["_id"]=rid; d["_captured_at"]=captured; d["_run_id"]=run_id; d["_parent_run_id"]=parent_run_id; d["_app_version"]=app_version; d["_schema_version"]=schema_version; d["_run_kind"]=run_kind; out.append(d)
     return out
 
 

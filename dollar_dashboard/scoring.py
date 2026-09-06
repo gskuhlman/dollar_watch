@@ -133,6 +133,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     cofer_raw = _safe(snapshot.get("cofer_dedollarization_pressure"))
     fiscal_flow_raw = _safe(snapshot.get("fiscal_flow_stress_auto"))
     stable_raw = _safe(snapshot.get("stablecoin_dollar_support_auto"))
+    buyback_intensity = _safe(_v(snapshot, "treasury_buyback_meta", "intensity"))
+    buyback_conf = _conf(snapshot, "buyback", default=0.0)
 
     auction_auto = _eff(auction_raw, auction_conf)
     cftc_pressure = _eff(cftc_raw, cftc_conf)
@@ -192,6 +194,9 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     if term_premium_3m > 0.20: fiscal_supply += 7 * fred_conf
     fiscal_supply += 0.30 * auction_auto
     fiscal_supply += 0.25 * fiscal_flow
+    # Buybacks are a policy-response/liquidity-support signal, not proof of failed demand.
+    # Keep the direct score contribution deliberately small; the auction channel remains primary.
+    fiscal_supply += 0.05 * _eff(buyback_intensity, buyback_conf)
     fiscal_supply += 0.10 * ov.get("treasury_auction_stress", 0)
     fiscal_supply += 0.10 * ov.get("institutional_credibility_stress", 0)
     fiscal_supply = _clamp(fiscal_supply)
@@ -327,10 +332,25 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "COFER": {"raw": round(cofer_raw,1), "confidence": round(cofer_conf*100,1), "effective": round(cofer_pressure,1)},
         "Fiscal flows": {"raw": round(fiscal_flow_raw,1), "confidence": round(fiscal_conf*100,1), "effective": round(fiscal_flow,1)},
         "Stablecoin support": {"raw": round(stable_raw,1), "confidence": round(stable_conf*100,1), "effective": round(stablecoin_auto,1)},
+        "Treasury buyback monitoring": {"raw": round(buyback_intensity,1), "confidence": round(buyback_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_conf),1)},
+    }
+
+    # Evidence coverage is separate from risk. A low managed-devaluation score with poor
+    # verified policy coverage means UNKNOWN/LOW-COVERAGE, not proof that policy intent is absent.
+    verified_policy_items = [a for a in override_audit.values() if a.get("effective",0) != 0]
+    policy_cov = min(100.0, 20.0 + 12.0*len(verified_policy_items) + 20.0*news_conf)
+    regime_coverage = {
+        "Managed dollar devaluation": round(_clamp(0.35*market_conf*100 + 0.15*cftc_conf*100 + 0.50*policy_cov),1),
+        "Fiscal / Treasury supply stress": round(_clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.10*buyback_conf*100),1),
+        "Inflation / monetary debasement": round(_clamp(0.55*fred_conf*100 + 0.25*market_conf*100 + 0.20*policy_cov),1),
+        "Dollar funding squeeze": round(_clamp(0.80*fred_conf*100 + 0.20*market_conf*100),1),
+        "Reserve-confidence crisis": round(_clamp(0.22*market_conf*100 + 0.20*fred_conf*100 + 0.22*tic_conf*100 + 0.18*cofer_conf*100 + 0.10*stable_conf*100 + 0.08*policy_cov),1),
+        "FX positioning squeeze": round(_clamp(0.72*cftc_conf*100 + 0.28*market_conf*100),1),
     }
 
     return {
         "regimes": regimes,
+        "regime_evidence_coverage": regime_coverage,
         "regime_mix_not_probability": mix,
         "components": {
             "Policy intent / intervention": round(policy_intent, 1),
@@ -342,6 +362,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             "Inflation / debasement pressure": round(inflation, 1),
             "Treasury / repo / funding plumbing stress": round(plumbing, 1),
             "Institutional credibility stress": round(institutional, 1),
+            "Treasury buyback policy-response intensity": round(_eff(buyback_intensity,buyback_conf),1),
         },
         "confidence_adjustments": confidence_audit,
         "verified_override_audit": override_audit,

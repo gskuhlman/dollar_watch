@@ -13,7 +13,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.2 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.3 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -195,7 +195,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.2 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.3 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -295,7 +295,7 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
     """Fetch official Treasury auction results without a brittle fields= query.
 
-    FiscalData returns the full auction schema; V2.2 normalizes legacy/current aliases locally.
+    FiscalData returns the full auction schema; V2.3 normalizes legacy/current aliases locally.
     This prevents a single renamed or misspelled API field from turning the auction channel off.
     """
     params = {
@@ -303,7 +303,15 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
         "sort": "-auction_date",
     }
     data, _meta = _fiscaldata_pages(TREASURY_AUCTIONS_URL, params, page_size=page_size)
-    return _normalize_auction_frame(pd.DataFrame(data))
+    out = _normalize_auction_frame(pd.DataFrame(data))
+    if out.empty:
+        return out
+    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    # Completed-results channel only. Future placeholders/issue dates never contaminate
+    # the historical stress score or freshness clock.
+    out = out[(out["auction_date"].notna()) & (out["auction_date"] <= today)]
+    out = out[out["bid_to_cover_ratio"].notna()]
+    return out.sort_values("auction_date", ascending=False).reset_index(drop=True)
 
 
 def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd.DataFrame:

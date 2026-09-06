@@ -18,6 +18,7 @@ from .intelligence import (
 )
 from .fiscal import fetch_fiscal_pipeline
 from .news import fetch_news
+from .buybacks import fetch_buyback_schedule, summarize_buybacks
 
 
 
@@ -67,7 +68,7 @@ def collect_live_bundle() -> dict[str, Any]:
         auctions = fetch_treasury_auctions()
         auction_summary, auction_stress = summarize_auction_stress(auctions)
         bundle["auctions"] = auctions; bundle["auction_summary"] = auction_summary; bundle["auction_stress"] = auction_stress
-        last = auctions["record_date"].max() if not auctions.empty and "record_date" in auctions else None
+        last = auctions["auction_date"].max() if not auctions.empty and "auction_date" in auctions else None
         status["Treasury auctions"] = {
             "ok": not auctions.empty, "weight": 1.2, "last_date": last,
             "notes": "Historical results via schema-normalized FiscalData: bid-to-cover and bidder mix",
@@ -80,14 +81,29 @@ def collect_live_bundle() -> dict[str, Any]:
         upcoming_raw = fetch_upcoming_treasury_auctions(days=35)
         upcoming = summarize_upcoming_auctions(upcoming_raw, days=35)
         bundle["upcoming_auctions"] = upcoming
-        last = upcoming_raw["record_date"].max() if not upcoming_raw.empty and "record_date" in upcoming_raw else pd.Timestamp.now(tz="UTC")
         status["Treasury upcoming auctions"] = {
-            "ok": not upcoming.empty, "weight": 0.35, "last_date": last,
-            "notes": "Dedicated upcoming_auctions endpoint; catalyst calendar only, not a stress score",
+            "ok": not upcoming.empty, "weight": 0.35,
+            # This is a calendar feed, so retrieval freshness matters; future auction/issue dates
+            # are intentionally not used as observation dates.
+            "last_date": pd.Timestamp.now(tz="UTC"),
+            "notes": "Dedicated upcoming_auctions endpoint; future calendar only and excluded from historical auction freshness/stress",
         }
     except Exception as e:
         bundle["upcoming_auctions"] = pd.DataFrame()
         status["Treasury upcoming auctions"] = {"ok": False, "weight": 0.35, "error": str(e), "notes": "Historical auction scoring can still operate if this calendar feed fails"}
+
+
+    try:
+        buybacks, buyback_source = fetch_buyback_schedule()
+        buyback_meta = summarize_buybacks(buybacks, buyback_source)
+        bundle["buybacks"] = buybacks; bundle["buyback_meta"] = buyback_meta
+        status["Treasury buyback schedule"] = {
+            "ok": True, "weight": 0.65, "last_date": pd.Timestamp.now(tz="UTC"),
+            "notes": f"Official Treasury quarterly buyback schedule; long-end operations={buyback_meta.get('long_end_operations',0)}",
+        }
+    except Exception as e:
+        bundle["buybacks"] = pd.DataFrame(); bundle["buyback_meta"] = {}
+        status["Treasury buyback schedule"] = {"ok": False, "weight": 0.65, "error": str(e), "notes": "Buybacks are policy/liquidity-support evidence; failure is unknown, not zero activity"}
 
     try:
         cftc = fetch_cftc_tff()
@@ -169,6 +185,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "cofer": source_confidence.get("IMF COFER", 0.0),
         "fiscal": source_confidence.get("Treasury fiscal flows", 0.0),
         "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
+        "buyback": source_confidence.get("Treasury buyback schedule", 0.0),
         "news": source_confidence.get("News discovery", 0.0),
     }
 
@@ -193,6 +210,8 @@ def collect_live_bundle() -> dict[str, Any]:
         "stablecoin_dollar_support_auto": float(bundle.get("stable_support", 0) or 0),
         "stablecoin_summary": _records(bundle.get("stable_focus", pd.DataFrame())),
         "stablecoin_meta": bundle.get("stable_meta", {}),
+        "treasury_buyback_meta": bundle.get("buyback_meta", {}),
+        "treasury_buybacks": _records(bundle.get("buybacks", pd.DataFrame())),
         "data_confidence": float(confidence),
         "source_confidence": source_confidence,
         "component_confidence": component_confidence,
