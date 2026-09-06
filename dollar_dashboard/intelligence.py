@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-UA = {"User-Agent": "dollar_watch/2.4 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.5 (+local research dashboard)"}
 
 CFTC_DATASET = "gpe5-46if"  # Traders in Financial Futures - futures only
 CFTC_ENDPOINTS = [
@@ -348,7 +348,7 @@ def summarize_stablecoins(assets: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.
 
     DefiLlama's USD-pegged universe can contain yield-bearing/tokenized-RWA products such as
     USDY or USYC. Those products are economically relevant to dollar/Treasury demand, but a
-    price above $1 can be intentional NAV accumulation rather than a depeg. V2.4 therefore
+    price above $1 can be intentional NAV accumulation rather than a depeg. V2.5 therefore
     separates transactional stablecoins from tokenized Treasury/RWA products before applying
     any peg-stability rule.
     """

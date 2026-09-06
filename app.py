@@ -13,20 +13,20 @@ from dollar_dashboard.scoring import DEFAULT_OVERRIDES, score
 from dollar_dashboard.portfolio import recommend, scenario_stress_test, scenario_hedge_alignment, ASSETS
 from dollar_dashboard.storage import (
     save_snapshot, save_snapshot_if_new, recent_snapshots, get_overrides, set_override, get_setting, set_setting,
-    add_event, recent_events, save_alerts, recent_alerts,
+    add_event, recent_events, save_alerts, recent_alerts, save_verification_check, recent_verification_checks,
 )
 from dollar_dashboard.alerts import generate_alerts
 from dollar_dashboard.llm import analyze_with_local_llm, verify_claim_against_source, compact_previous_context
 from dollar_dashboard.triggers import evaluate_triggers
 from dollar_dashboard.evidence import classify_source, check_source_url, fetch_source_text
-from dollar_dashboard.verification import primary_source_candidates
+from dollar_dashboard.verification import primary_source_candidates, discover_primary_evidence
 from dollar_dashboard.run_history import classify_snapshot_change
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V2.4", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V2.5", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -115,7 +115,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.4")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V2.5")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -180,7 +180,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.4 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V2.5 Roadmap"
 ])
 
 with exec_tab:
@@ -220,9 +220,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V2.4 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V2.5 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.4 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V2.5 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -343,7 +343,7 @@ with flows_tab:
 
 with policy_tab:
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V2.4 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V2.5 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -427,6 +427,39 @@ with policy_tab:
         selected_row=verification_queue[verification_queue["claim"].eq(selected_claim)].iloc[0]
         st.caption(f"Preferred source family: {selected_row.get('preferred_verification_source','primary source')} | Headline source tier: {selected_row.get('source_tier','?')}")
         st.code(str(selected_row.get("claim","")),language=None)
+        claim_bucket=str(selected_row.get("bucket","")); claim_text=str(selected_row.get("claim",""))
+        discovery_key=f"primary_discovery::{claim_bucket}::{claim_text}"
+        if st.button("Discover primary-source evidence",width="stretch"):
+            with st.spinner("Searching known official source families and ranking same-domain evidence pages..."):
+                st.session_state[discovery_key]=discover_primary_evidence(claim_bucket,claim_text,max_candidates=8)
+        candidates=st.session_state.get(discovery_key,[])
+        if candidates:
+            show=pd.DataFrame(candidates)
+            show_cols=[c for c in ["name","source_tier","relevance_score","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
+            st.dataframe(show[show_cols],width="stretch",hide_index=True,column_config={"final_url":st.column_config.LinkColumn("primary source")})
+            st.caption("Discovery is not verification. Candidates are official/source-family pages ranked for relevance to the claim.")
+            if st.button("LLM-check top primary candidates",width="stretch"):
+                if not lm_url:
+                    st.error("Configure the local LLM base URL first.")
+                else:
+                    checked=0
+                    for c in [x for x in candidates if x.get("reachable")][:3]:
+                        fetched=fetch_source_text(c.get("final_url") or c.get("url"),max_chars=30000,timeout=12)
+                        if not fetched.get("ok"): continue
+                        try:
+                            result=verify_claim_against_source(claim_text,fetched.get("text",""),fetched.get("final_url",c.get("url")),base_url=lm_url,model=lm_model or None,timeout_seconds=int(lm_timeout))
+                            first=(result.splitlines()[0].strip().upper() if result else "INCONCLUSIVE")
+                            verdict=first if first in {"SUPPORTED","CONTRADICTED","INCONCLUSIVE"} else "INCONCLUSIVE"
+                            save_verification_check(claim_text,claim_bucket,fetched.get("final_url",c.get("url")),verdict,result,model=lm_model or "auto")
+                            checked+=1
+                        except Exception as exc:
+                            st.warning(f"Verification failed for {c.get('url')}: {exc}")
+                    st.success(f"Saved {checked} LLM-assisted primary-source checks. They remain non-scoring until you explicitly verify/promote evidence.")
+        prior_checks=[x for x in recent_verification_checks(100) if x.get("claim")==claim_text]
+        if prior_checks:
+            st.write("**Persisted checks for this claim**")
+            pc=pd.DataFrame(prior_checks)
+            st.dataframe(pc[[c for c in ["created_at","verdict","source_tier","source_url","explanation","model"] if c in pc.columns]],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source")})
 
     st.subheader("Current headline monitor — triage only")
     if news_df.empty: st.warning("News feed unavailable.")
@@ -503,6 +536,7 @@ with analysis_tab:
                 "verified_analyst_evidence":[{k:v for k,v in e.items()} for e in verified_events],
                 "unverified_evidence_discovery_only":unverified_events,
                 "verification_queue_discovery_only":build_verification_queue(news_df,30).to_dict(orient="records") if not news_df.empty else [],
+                "persisted_primary_source_checks":recent_verification_checks(50),
                 "headline_scores_discovery_only":news_class.get("scores",{}),
                 "headlines_discovery_only":news_df.head(50).to_dict(orient="records") if not news_df.empty else [],
             }
@@ -536,8 +570,16 @@ with health_tab:
     else: st.dataframe(health.round(2),width="stretch",hide_index=True)
     st.subheader("Raw → confidence → effective input")
     if not cad.empty: st.dataframe(cad,width="stretch",hide_index=True)
+    fcd=scores.get("regime_evidence_coverage_details",{}).get("Dollar funding squeeze",{})
+    if fcd:
+        st.subheader("Dollar-funding observation coverage")
+        fc1,fc2,fc3=st.columns(3)
+        fc1.metric("Domestic funding coverage",f"{fcd.get('domestic_funding_coverage',0):.0f}%")
+        fc2.metric("Offshore funding coverage",f"{fcd.get('offshore_funding_coverage',0):.0f}%")
+        fc3.metric("Effective regime coverage",f"{fcd.get('effective',0):.0f}%")
+        if fcd.get('offshore_gap'): st.warning(fcd.get('offshore_gap'))
     st.markdown("""
-### V2.4 evidence rules
+### V2.5 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.
@@ -546,6 +588,9 @@ with health_tab:
 - **Token trades are suppressed.** New positions below the minimum size and trades below the dollar/% threshold are not actionable.
 - **Future-dated observations are hygiene warnings.** They are not treated as extra-fresh data and are confidence-discounted.
 - **RWA tokens are not stablecoins.** Yield-accumulating tokenized Treasury products are separated before $1 peg tests.
+- **Repo tail ≠ median funding stress.** SOFR99-IORB has its own percentile/persistence trigger and is never described as distance to the median SOFR-IORB threshold.
+- **Domestic funding coverage ≠ global funding coverage.** Missing cross-currency-basis/FX-swap data explicitly lowers Dollar Funding Squeeze coverage.
+- **Unknown ≠ absent.** When critical regime coverage is below 50%, narrative output must use unverified/unknown/insufficient-evidence language rather than asserting the factor is absent.
 """)
 
 with roadmap_tab:

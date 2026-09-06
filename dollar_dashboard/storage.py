@@ -49,6 +49,23 @@ def _ensure_events(con) -> None:
     _ensure_column(con, "events", "provenance", "TEXT DEFAULT 'ANALYST-ENTERED'")
 
 
+def _ensure_verification_checks(con) -> None:
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS verification_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            claim TEXT NOT NULL,
+            bucket TEXT,
+            source_url TEXT NOT NULL,
+            source_tier TEXT DEFAULT 'UNSOURCED',
+            verdict TEXT NOT NULL,
+            explanation TEXT,
+            model TEXT,
+            provenance TEXT DEFAULT 'LLM-ASSISTED'
+        )
+    """)
+
+
 def connect():
     con = sqlite3.connect(db_path())
     con.execute("PRAGMA journal_mode=WAL")
@@ -90,6 +107,7 @@ def connect():
         )
     """)
     _ensure_events(con)
+    _ensure_verification_checks(con)
     return con
 
 
@@ -196,6 +214,25 @@ def recent_events(limit: int = 100) -> list[dict]:
         "SELECT id,created_at,category,actor,title,source_url,impact,notes,verification_status,source_tier,provenance FROM events ORDER BY id DESC LIMIT ?",(limit,)
     ).fetchall(); con.close()
     keys=["id","created_at","category","actor","title","source_url","impact","notes","verification_status","source_tier","provenance"]
+    return [dict(zip(keys,r)) for r in rows]
+
+
+def save_verification_check(claim: str, bucket: str, source_url: str, verdict: str, explanation: str = "", model: str = "") -> int:
+    con=connect(); _ensure_verification_checks(con)
+    tier=classify_source(source_url).get("source_tier","UNSOURCED")
+    cur=con.execute(
+        "INSERT INTO verification_checks(created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance) VALUES (?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),claim,bucket,source_url,tier,verdict,explanation,model,"LLM-ASSISTED"),
+    )
+    con.commit(); rid=int(cur.lastrowid); con.close(); return rid
+
+
+def recent_verification_checks(limit: int = 100) -> list[dict]:
+    con=connect(); _ensure_verification_checks(con)
+    rows=con.execute(
+        "SELECT id,created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance FROM verification_checks ORDER BY id DESC LIMIT ?",(limit,)
+    ).fetchall(); con.close()
+    keys=["id","created_at","claim","bucket","source_url","source_tier","verdict","explanation","model","provenance"]
     return [dict(zip(keys,r)) for r in rows]
 
 

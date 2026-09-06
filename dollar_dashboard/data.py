@@ -13,7 +13,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/2.4 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/2.5 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -189,8 +189,29 @@ def fetch_fred_bundle(start: str = "2024-01-01") -> tuple[pd.DataFrame, pd.DataF
             "3m_change": delta_days(91),
             "1y_change": delta_days(365),
         }
-    return hist, pd.DataFrame(rows).T
 
+    # V2.5 repo-tail diagnostics. A high SOFR 99th-percentile spread is not the same
+    # thing as the median SOFR-IORB spread. Track its own historical extremeness and
+    # persistence so the dashboard cannot describe a tail move as being "1bp from"
+    # the median funding-stress trigger.
+    tail_label = "SOFR99-IORB spread"
+    if tail_label in hist.columns and tail_label in rows:
+        ts = hist[tail_label].dropna()
+        if not ts.empty:
+            one_year = ts.loc[ts.index >= (ts.index[-1] - pd.Timedelta(days=365))]
+            if one_year.empty:
+                one_year = ts
+            last = float(ts.iloc[-1])
+            percentile = float((one_year <= last).mean() * 100.0)
+            std = float(one_year.std(ddof=0)) if len(one_year) > 1 else 0.0
+            mean = float(one_year.mean()) if len(one_year) else last
+            z = (last - mean) / std if std > 0 else 0.0
+            recent = ts.tail(3)
+            rows[tail_label]["percentile_1y"] = percentile
+            rows[tail_label]["zscore_1y"] = float(z)
+            rows[tail_label]["recent_obs_ge_10bp"] = int((recent >= 0.10).sum())
+            rows[tail_label]["recent_obs_ge_8bp"] = int((recent >= 0.08).sum())
+    return hist, pd.DataFrame(rows).T
 
 
 TREASURY_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
@@ -198,7 +219,7 @@ TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/a
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
-# V2.4 deliberately fetches the returned schema rather than sending a brittle fields= list
+# V2.5 deliberately fetches the returned schema rather than sending a brittle fields= list
 # that causes the entire request to fail with HTTP 400 when one name is wrong.
 _AUCTION_ALIASES = {
     "record_date": ["record_date"],
@@ -298,7 +319,7 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
 def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) -> pd.DataFrame:
     """Fetch official Treasury auction results without a brittle fields= query.
 
-    FiscalData returns the full auction schema; V2.4 normalizes legacy/current aliases locally.
+    FiscalData returns the full auction schema; V2.5 normalizes legacy/current aliases locally.
     This prevents a single renamed or misspelled API field from turning the auction channel off.
     """
     params = {

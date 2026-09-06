@@ -133,6 +133,10 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     custody_yoy = _safe(_v(f, "Foreign custody UST YoY change (millions)", "last"))
     swaps = _safe(_v(f, "Central bank liquidity swaps (millions)", "last"), 0)
     sofr_iorb = _safe(_v(f, "SOFR-IORB spread", "last"))
+    sofr99_iorb = _safe(_v(f, "SOFR99-IORB spread", "last"))
+    sofr99_pct = _safe(_v(f, "SOFR99-IORB spread", "percentile_1y"))
+    sofr99_z = _safe(_v(f, "SOFR99-IORB spread", "zscore_1y"))
+    sofr99_recent10 = _safe(_v(f, "SOFR99-IORB spread", "recent_obs_ge_10bp"),0)
     gold_3m = _safe(_v(m, "Gold", "3m"))
     cftc_down = _safe(snapshot.get("cftc_usd_downside_pressure"), 0)
 
@@ -168,7 +172,17 @@ def evaluate_triggers(snapshot: dict, scores: dict) -> list[dict]:
     out.append({"id":"dxy_positioning_break","side":"CONFIRM","status":"TRIGGERED" if dxy_break else "NOT_TRIGGERED","condition":"DXY <96 and CFTC USD-downside pressure >=60","action":"Treat dollar weakness as positioning-confirmed rather than spot noise."})
 
     repo_break = (sofr_iorb is not None and sofr_iorb > 0.10) or swaps >= 1000
-    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":"TRIGGERED" if repo_break else "NOT_TRIGGERED","condition":"SOFR-IORB >10bp or Fed foreign-central-bank swaps >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity until plumbing normalizes."})
+    out.append({"id":"repo_or_swap_stress","side":"CONFIRM","status":"TRIGGERED" if repo_break else "NOT_TRIGGERED","condition":"Median SOFR-IORB >10bp or Fed foreign-central-bank swaps >=$1B","action":"Raise dollar-funding-squeeze risk; favor T-bills/liquidity until plumbing normalizes."})
+
+    tail_confirm = bool(sofr99_iorb is not None and sofr99_iorb >= 0.10 and ((sofr99_pct or 0)>=95 or (sofr99_z or 0)>=2.0) and sofr99_recent10>=2)
+    tail_watch = bool(sofr99_iorb is not None and sofr99_iorb >= 0.08 and ((sofr99_pct or 0)>=85 or (sofr99_z or 0)>=1.25))
+    tail_status = "TRIGGERED" if tail_confirm else ("WATCH" if tail_watch else "NOT_TRIGGERED")
+    out.append({
+        "id":"repo_tail_stress","side":"WATCH","status":tail_status,
+        "condition":"SOFR 99th-percentile minus IORB >=10bp with >=2/3 persistence and >=95th historical percentile (WATCH from 8bp/extreme tail)",
+        "action":"Investigate repo distribution/dealer capacity. Tail stress alone is not the median SOFR funding-squeeze trigger.",
+        "sofr99_iorb":sofr99_iorb,"percentile_1y":sofr99_pct,"zscore_1y":sofr99_z,"recent_obs_ge_10bp":sofr99_recent10,
+    })
 
     term_kill = term is not None and term < 0.70
     out.append({"id":"term_premium_normalizes","side":"KILL","status":"TRIGGERED" if term_kill else "NOT_TRIGGERED","condition":"10Y term premium <0.70%","action":"Reduce fiscal-duration stress score if auctions and fiscal flows are also benign."})

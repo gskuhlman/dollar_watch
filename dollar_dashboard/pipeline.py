@@ -99,15 +99,26 @@ def collect_live_bundle() -> dict[str, Any]:
         buybacks, buyback_source = fetch_buyback_schedule()
         buyback_meta = summarize_buybacks(buybacks, buyback_source)
         bundle["buybacks"] = buybacks; bundle["buyback_meta"] = buyback_meta
-        status["Treasury buybacks"] = {
-            "ok": not buybacks.empty, "weight": 0.75, "last_date": pd.Timestamp.now(tz="UTC"),
-            "notes": (f"Official TreasuryDirect schedule + completed result XMLs; "
-                      f"scheduled={buyback_meta.get('scheduled_operations',0)}, completed-results={buyback_meta.get('completed_operations',0)}, "
-                      f"long-end scheduled={buyback_meta.get('long_end_operations',0)}"),
+        schedule_ok = int(buyback_meta.get("schedule_operations",0) or 0) > 0
+        results_ok = bool(buyback_meta.get("results_available"))
+        latest_result = pd.to_datetime(buyback_meta.get("latest_completed_operation"), errors="coerce", utc=True)
+        status["Treasury buyback schedule"] = {
+            "ok": schedule_ok, "weight": 0.45, "last_date": pd.Timestamp.now(tz="UTC"),
+            "notes": (f"Official tentative capacity/calendar only; schedule-rows={buyback_meta.get('schedule_operations',0)}, "
+                      f"long-end scheduled={buyback_meta.get('long_end_operations',0)}. Announced capacity is not execution."),
+        }
+        status["Treasury buyback results"] = {
+            "ok": results_ok, "weight": 0.65,
+            "last_date": latest_result if pd.notna(latest_result) else None,
+            "notes": (f"Completed result XMLs; attempted={buyback_meta.get('result_urls_attempted',0)}, "
+                      f"completed={buyback_meta.get('completed_operations',0)}, strategy={buyback_meta.get('result_discovery_strategy','?')}. "
+                      "Missing results are unknown execution, not zero buyback activity."),
+            **({} if results_ok else {"error":"No completed TreasuryDirect result XML was ingested"}),
         }
     except Exception as e:
         bundle["buybacks"] = pd.DataFrame(); bundle["buyback_meta"] = {}
-        status["Treasury buybacks"] = {"ok": False, "weight": 0.75, "error": str(e), "notes": "Buybacks are policy/liquidity-support evidence; failure is unknown, not zero activity"}
+        status["Treasury buyback schedule"] = {"ok": False, "weight": 0.45, "error": str(e), "notes": "Buyback schedule unavailable; missing evidence, not zero policy capacity"}
+        status["Treasury buyback results"] = {"ok": False, "weight": 0.65, "error": str(e), "notes": "Buyback execution unavailable; missing evidence, not zero activity"}
 
     try:
         cftc = fetch_cftc_tff()
@@ -189,8 +200,20 @@ def collect_live_bundle() -> dict[str, Any]:
         "cofer": source_confidence.get("IMF COFER", 0.0),
         "fiscal": source_confidence.get("Treasury fiscal flows", 0.0),
         "stablecoin": source_confidence.get("Stablecoin supply", 0.0),
-        "buyback": source_confidence.get("Treasury buybacks", 0.0),
+        "buyback_schedule": source_confidence.get("Treasury buyback schedule", 0.0),
+        "buyback_results": source_confidence.get("Treasury buyback results", 0.0),
+        "buyback": 0.55*source_confidence.get("Treasury buyback schedule", 0.0) + 0.45*source_confidence.get("Treasury buyback results", 0.0),
         "news": source_confidence.get("News discovery", 0.0),
+    }
+
+    # Cross-currency basis / OTC FX-swap stress is not available from a dependable free
+    # real-time feed in V2.5.  Keep the missing offshore layer explicit so domestic repo
+    # coverage can never be mislabeled as 100% observation of global dollar funding.
+    offshore_funding_meta = {
+        "available": False,
+        "coverage": 30.0,
+        "reason": "No dependable free real-time EUR/USD, JPY/USD and CHF/USD cross-currency-basis feed configured.",
+        "desired_metrics": ["EURUSD cross-currency basis","JPYUSD cross-currency basis","CHFUSD cross-currency basis","OTC FX-swap dollar premium"],
     }
 
     snapshot = {
@@ -217,6 +240,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "treasury_buyback_meta": bundle.get("buyback_meta", {}),
         "treasury_buybacks": _records(bundle.get("buybacks", pd.DataFrame())),
         "fed_treasury_classification": bundle.get("fed_treasury_classification", {}),
+        "offshore_usd_funding_meta": offshore_funding_meta,
         "data_confidence": float(confidence),
         "source_confidence": source_confidence,
         "component_confidence": component_confidence,

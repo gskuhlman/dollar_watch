@@ -48,6 +48,7 @@ def _compact_analysis_payload(payload: dict, max_chars: int = 60000) -> str:
         "unverified_evidence_discovery_only":15,
         "verification_queue_discovery_only":15,
         "headlines_discovery_only":20,
+        "persisted_primary_source_checks":20,
     }
     for k,n in caps.items():
         if isinstance(data.get(k),list): data[k]=data[k][:n]
@@ -65,7 +66,7 @@ def _compact_analysis_payload(payload: dict, max_chars: int = 60000) -> str:
             if len(raw)<=max_chars: return raw
     # Final structured compaction: preserve causal summaries, current scores, triggers and portfolio.
     if isinstance(data.get("snapshot"),dict):
-        keep={"timestamp","market_summary","fred_summary","auction_stress_auto","auction_summary","upcoming_auctions","cftc_usd_downside_pressure","cftc_summary","fx_positioning_squeeze_risk","tic_dedollarization_pressure","tic_meta","cofer_dedollarization_pressure","cofer_meta","fiscal_flow_stress_auto","fiscal_meta","stablecoin_dollar_support_auto","stablecoin_meta","treasury_buyback_meta","fed_treasury_classification","data_confidence","component_confidence"}
+        keep={"timestamp","market_summary","fred_summary","auction_stress_auto","auction_summary","upcoming_auctions","cftc_usd_downside_pressure","cftc_summary","fx_positioning_squeeze_risk","tic_dedollarization_pressure","tic_meta","cofer_dedollarization_pressure","cofer_meta","fiscal_flow_stress_auto","fiscal_meta","stablecoin_dollar_support_auto","stablecoin_meta","treasury_buyback_meta","fed_treasury_classification","offshore_usd_funding_meta","data_confidence","component_confidence"}
         data["snapshot"]={k:v for k,v in data["snapshot"].items() if k in keep}
     raw=json.dumps(data,default=str)
     return raw
@@ -103,7 +104,7 @@ def analyze_with_local_llm(
             raise ValueError("No model specified and no models returned by /models")
         model = models[0]["id"]
 
-    system = """You are the red-team macro analyst for dollar_watch V2.4.
+    system = """You are the red-team macro analyst for dollar_watch V2.5.
 Do not assume a dollar-collapse thesis is correct. Distinguish six regimes:
 (1) managed dollar devaluation, (2) fiscal/Treasury supply stress,
 (3) inflation/monetary debasement, (4) dollar funding squeeze,
@@ -118,6 +119,7 @@ Evidence rules are strict:
 - Explicitly discount stale components using confidence_adjustments.
 - Regime scores are 0-100 risk indices, NOT probabilities. regime_mix_not_probability is descriptive only.
 - regime_evidence_coverage is separate from risk: low risk + low coverage means uncertainty, not safety. Critical coverage is more important than generic coverage; missing verified policy evidence cannot be replaced by abundant spot-market data.
+- LANGUAGE GATE: when a regime's critical coverage is below 50%, never say the relevant factor is absent, nonexistent, or disproven. Say "no verified evidence is currently ingested", "unknown", or "insufficient evidence".
 - Treasury buybacks are debt-management/liquidity-support evidence, not by themselves proof of weak demand or QE. Distinguish announced capacity, offers submitted, and amounts accepted.
 - Use the supplied Fed Treasury-holdings classification. Bill accumulation with MBS runoff is not automatic QE or fiscal-rescue evidence.
 - Event-based auction triggers age and expire. PENDING_REPLACEMENT, AGING, and EXPIRED are not equivalent to a fresh TRIGGERED signal.
@@ -126,6 +128,8 @@ Evidence rules are strict:
 - A 2Y Treasury yield above current SOFR is a carry/rate-path signal, NOT by itself proof that the market prices hikes; term/risk premia also matter.
 - Tokenized Treasury/RWA products (for example accumulating-NAV structures) are not automatically $1-pegged stablecoins. Use the supplied asset classification.
 - A FAILED source means missing evidence, not a benign zero reading.
+- Median SOFR-IORB and SOFR99-IORB are different signals. Never describe SOFR99-IORB as distance to the median SOFR trigger. Use repo_tail_signal for upper-tail stress and repo_or_swap_stress for median/facility stress.
+- Domestic repo/Fed-facility coverage is not full global-dollar-funding coverage. Explicitly mention the offshore cross-currency-basis/FX-swap gap when Dollar Funding Squeeze coverage is discussed.
 
 Prioritize causal mechanisms, fiscal flows, policy actors, foreign actors, Treasury/repo plumbing,
 positioning, structural dollar supports, and disconfirming evidence. Distinguish duration/supply stress

@@ -120,6 +120,9 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     swaps_1m = _safe(_v(f, "Central bank liquidity swaps (millions)", "1m_change"))
     sofr_iorb = _safe(_v(f, "SOFR-IORB spread", "last"), None)
     sofr99_iorb = _safe(_v(f, "SOFR99-IORB spread", "last"), None)
+    sofr99_pct = _safe(_v(f, "SOFR99-IORB spread", "percentile_1y"), None)
+    sofr99_z = _safe(_v(f, "SOFR99-IORB spread", "zscore_1y"), None)
+    sofr99_recent10 = _safe(_v(f, "SOFR99-IORB spread", "recent_obs_ge_10bp"), 0)
     tgcr_disp = _safe(_v(f, "TGCR dispersion", "last"), None)
     reserves_3m = _safe(_v(f, "Reserve balances (billions)", "3m_change"))
     tga_3m = _safe(_v(f, "Treasury General Account (billions)", "3m_change"))
@@ -134,7 +137,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     fiscal_flow_raw = _safe(snapshot.get("fiscal_flow_stress_auto"))
     stable_raw = _safe(snapshot.get("stablecoin_dollar_support_auto"))
     buyback_intensity = _safe(_v(snapshot, "treasury_buyback_meta", "intensity"))
+    buyback_schedule_conf = _conf(snapshot, "buyback_schedule", default=0.0)
+    buyback_results_conf = _conf(snapshot, "buyback_results", default=0.0)
     buyback_conf = _conf(snapshot, "buyback", default=0.0)
+    offshore_funding_coverage = _clamp(_v(snapshot, "offshore_usd_funding_meta", "coverage", default=30.0))
 
     auction_auto = _eff(auction_raw, auction_conf)
     cftc_pressure = _eff(cftc_raw, cftc_conf)
@@ -223,7 +229,13 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     if swaps > 5000 or swaps_1m > 2500: plumbing += 12 * fred_conf
     if sofr_iorb is not None and sofr_iorb > 0.05: plumbing += 6 * fred_conf
     if sofr_iorb is not None and sofr_iorb > 0.10: plumbing += 10 * fred_conf
-    if sofr99_iorb is not None and sofr99_iorb > 0.15: plumbing += 8 * fred_conf
+    # Repo-tail stress is distinct from median SOFR stress. A 99th-percentile print near 10bp
+    # does not mean the median SOFR-IORB trigger is about to fire. Tail pressure contributes
+    # modestly only when it is historically extreme/persistent.
+    repo_tail_confirm = bool(sofr99_iorb is not None and sofr99_iorb >= 0.10 and ((sofr99_pct or 0) >= 95 or (sofr99_z or 0) >= 2.0) and sofr99_recent10 >= 2)
+    repo_tail_watch = bool(sofr99_iorb is not None and sofr99_iorb >= 0.08 and ((sofr99_pct or 0) >= 85 or (sofr99_z or 0) >= 1.25))
+    if repo_tail_confirm: plumbing += 8 * fred_conf
+    elif repo_tail_watch: plumbing += 3 * fred_conf
     if tgcr_disp is not None and tgcr_disp > 0.10: plumbing += 6 * fred_conf
     if reserves_3m < -300 and tga_3m > 300: plumbing += 6 * fred_conf
     plumbing += 0.15 * auction_auto
@@ -277,7 +289,9 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     if dxy_1m > 0.03: squeeze += 12 * market_conf; drivers["dollar_squeeze"].append("DXY up >3% in ~1 month")
     if dxy_1m > 0.06: squeeze += 8 * market_conf
     if swaps > 1000: drivers["dollar_squeeze"].append("Fed foreign-central-bank swap usage is elevated")
-    if sofr_iorb is not None and sofr_iorb > 0.10: drivers["dollar_squeeze"].append("SOFR is >10bp above IORB")
+    if sofr_iorb is not None and sofr_iorb > 0.10: drivers["dollar_squeeze"].append("Median SOFR is >10bp above IORB")
+    if repo_tail_confirm: drivers["dollar_squeeze"].append("SOFR 99th-percentile repo tail is persistently/historically stressed")
+    elif repo_tail_watch: drivers["dollar_squeeze"].append("SOFR 99th-percentile repo tail is elevated; median SOFR remains a separate signal")
     if tlt_1m < -0.05: squeeze += 4 * market_conf
     squeeze = _clamp(squeeze)
 
@@ -332,10 +346,11 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "COFER": {"raw": round(cofer_raw,1), "confidence": round(cofer_conf*100,1), "effective": round(cofer_pressure,1)},
         "Fiscal flows": {"raw": round(fiscal_flow_raw,1), "confidence": round(fiscal_conf*100,1), "effective": round(fiscal_flow,1)},
         "Stablecoin support": {"raw": round(stable_raw,1), "confidence": round(stable_conf*100,1), "effective": round(stablecoin_auto,1)},
-        "Treasury buyback monitoring": {"raw": round(buyback_intensity,1), "confidence": round(buyback_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_conf),1)},
+        "Treasury buyback schedule": {"raw": round(buyback_intensity,1), "confidence": round(buyback_schedule_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_schedule_conf),1)},
+        "Treasury buyback results": {"raw": round(buyback_intensity,1), "confidence": round(buyback_results_conf*100,1), "effective": round(_eff(buyback_intensity,buyback_results_conf),1)},
     }
 
-    # Evidence coverage is separate from risk. V2.4 distinguishes broad/generic coverage from
+    # Evidence coverage is separate from risk. V2.5 distinguishes broad/generic coverage from
     # CRITICAL coverage. Plenty of market data cannot substitute for missing verified policy intent
     # in the managed-devaluation regime, and lots of spot data cannot substitute for stale reserve data.
     def _verified(keys):
@@ -348,8 +363,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     policy_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
     reserve_policy_critical=_verified(["foreign_official_selling","brics_payment_progress","central_bank_gold_rotation","commodity_dedollarization"])
     generic_coverage = {
-        "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_conf*100 + 0.20*news_conf*100),
-        "Fiscal / Treasury supply stress": _clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.10*buyback_conf*100),
+        "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_schedule_conf*100 + 0.20*news_conf*100),
+        "Fiscal / Treasury supply stress": _clamp(0.28*fred_conf*100 + 0.28*auction_conf*100 + 0.24*fiscal_conf*100 + 0.10*tic_conf*100 + 0.05*buyback_schedule_conf*100 + 0.05*buyback_results_conf*100),
         "Inflation / monetary debasement": _clamp(0.62*fred_conf*100 + 0.28*market_conf*100 + 0.10*news_conf*100),
         "Dollar funding squeeze": _clamp(0.80*fred_conf*100 + 0.20*market_conf*100),
         "Reserve-confidence crisis": _clamp(0.22*market_conf*100 + 0.20*fred_conf*100 + 0.22*tic_conf*100 + 0.18*cofer_conf*100 + 0.10*stable_conf*100 + 0.08*news_conf*100),
@@ -359,7 +374,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "Managed dollar devaluation": policy_critical,
         "Fiscal / Treasury supply stress": _clamp(0.40*auction_conf*100 + 0.35*fiscal_conf*100 + 0.25*fred_conf*100),
         "Inflation / monetary debasement": _clamp(0.75*fred_conf*100 + 0.25*market_conf*100),
-        "Dollar funding squeeze": _clamp(0.90*fred_conf*100 + 0.10*market_conf*100),
+        # Domestic repo/facility coverage is strong, but a global dollar squeeze can first appear
+        # in cross-currency basis / FX swaps. Offshore coverage is therefore an explicit critical
+        # subcomponent rather than silently calling the regime 100% observed.
+        "Dollar funding squeeze": _clamp(0.62*fred_conf*100 + 0.08*market_conf*100 + 0.30*offshore_funding_coverage),
         "Reserve-confidence crisis": _clamp(0.30*tic_conf*100 + 0.25*cofer_conf*100 + 0.20*fred_conf*100 + 0.15*reserve_policy_critical + 0.10*market_conf*100),
         "FX positioning squeeze": _clamp(0.78*cftc_conf*100 + 0.22*market_conf*100),
     }
@@ -367,6 +385,11 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     # devaluation-policy evidence cannot masquerade as ~70% coverage of policy intent.
     regime_coverage = {k: round(_clamp(0.50*generic_coverage[k] + 0.50*critical_coverage[k]),1) for k in generic_coverage}
     regime_coverage_details={k:{"effective":regime_coverage[k],"generic":round(generic_coverage[k],1),"critical":round(critical_coverage[k],1)} for k in regime_coverage}
+    regime_coverage_details["Dollar funding squeeze"].update({
+        "domestic_funding_coverage": round(_clamp(0.90*fred_conf*100 + 0.10*market_conf*100),1),
+        "offshore_funding_coverage": round(offshore_funding_coverage,1),
+        "offshore_gap": snapshot.get("offshore_usd_funding_meta",{}).get("reason",""),
+    })
 
     return {
         "regimes": regimes,
@@ -387,6 +410,12 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         },
         "confidence_adjustments": confidence_audit,
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
+        "repo_tail_signal": {
+            "status": "CONFIRM" if repo_tail_confirm else ("WATCH" if repo_tail_watch else "NORMAL"),
+            "sofr99_iorb": sofr99_iorb, "percentile_1y": sofr99_pct, "zscore_1y": sofr99_z,
+            "recent_obs_ge_10bp": int(sofr99_recent10 or 0),
+            "note": "SOFR99 tail stress is separate from the median SOFR-IORB trigger."
+        },
         "verified_override_audit": override_audit,
         "early_warning_index": round(early_warning, 1),
         "confirmation_index": round(confirmation, 1),

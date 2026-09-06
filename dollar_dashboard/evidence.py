@@ -5,12 +5,12 @@ from urllib.parse import urlparse
 import requests
 
 PRIMARY_DOMAINS = {
-    "treasury.gov", "home.treasury.gov", "fiscaldata.treasury.gov", "ticdata.treasury.gov",
+    "treasury.gov", "home.treasury.gov", "fiscaldata.treasury.gov", "ticdata.treasury.gov", "treasurydirect.gov",
     "federalreserve.gov", "newyorkfed.org", "stlouisfed.org", "fred.stlouisfed.org",
     "imf.org", "data.imf.org", "api.imf.org", "bis.org", "cftc.gov", "publicreporting.cftc.gov",
     "whitehouse.gov", "commerce.gov", "ustr.gov", "sec.gov", "cbo.gov", "gao.gov",
-    "mof.go.jp", "boj.or.jp", "ecb.europa.eu", "snb.ch", "bankofengland.co.uk",
-    "pbc.gov.cn", "safe.gov.cn", "rbi.org.in", "brics2026.gov.in",
+    "mof.go.jp", "boj.or.jp", "ecb.europa.eu", "snb.ch", "bankofengland.co.uk", "dnb.nl",
+    "pbc.gov.cn", "safe.gov.cn", "rbi.org.in", "brics2026.gov.in", "brics.br",
 }
 MAJOR_NEWS_DOMAINS = {
     "reuters.com", "apnews.com", "ft.com", "wsj.com", "bloomberg.com", "economist.com",
@@ -51,7 +51,7 @@ def check_source_url(url: str, timeout: int = 8) -> dict:
     if not url:
         return {**info, "reachable": False, "http_status": None, "note": "No source URL supplied."}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.4"}, stream=True)
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.5"}, stream=True)
         ok = 200 <= r.status_code < 400
         return {
             **info,
@@ -90,7 +90,7 @@ def fetch_source_text(url: str, max_chars: int = 30000, timeout: int = 12) -> di
     if not url:
         return {"ok": False, "text": "", "error": "No URL supplied", **classify_source(url)}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.4"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/2.5"})
         r.raise_for_status()
         ctype = (r.headers.get("content-type") or "").lower()
         raw = r.text
