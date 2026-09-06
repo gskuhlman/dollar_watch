@@ -3,42 +3,84 @@
     "name": "Donald Trump",
     "role": "President",
     "watch": ["dollar", "interest rates", "Federal Reserve", "tariffs", "stablecoin", "World Liberty Financial", "USD1", "BRICS"],
-    "why": "Presidential statements can change expectations for exchange-rate, trade, Fed and crypto policy. Economic-interest analysis must remain separate from motive claims."
+    "why": "Presidential statements can change exchange-rate, trade, Fed and crypto expectations. Economic exposure must remain analytically separate from motive claims."
   },
   {
     "name": "Scott Bessent",
     "role": "Treasury Secretary",
-    "watch": ["FX intervention", "Exchange Stabilization Fund", "Treasury buybacks", "yen", "yuan", "euro", "strong dollar", "currency"],
-    "why": "Treasury directs U.S. FX intervention and debt management. Bessent has a long global-macro/currency background."
+    "watch": ["FX intervention", "Exchange Stabilization Fund", "Treasury buybacks", "yen", "yuan", "euro", "strong dollar", "currency", "auction", "debt management"],
+    "why": "Treasury directs U.S. FX intervention and debt management. Bessent has a long global-macro/currency background, making changes in Treasury signaling especially important."
   },
   {
     "name": "Kevin Warsh",
     "role": "Federal Reserve Chair",
-    "watch": ["inflation", "rate hike", "rate cut", "balance sheet", "Treasury", "Fed independence"],
-    "why": "Monetary policy can reinforce or counteract fiscal/devaluation pressure."
+    "watch": ["inflation", "rate hike", "rate cut", "balance sheet", "Treasury", "Fed independence", "liquidity", "swap lines"],
+    "why": "Monetary policy can reinforce dollar-devaluation pressure or create the opposite dollar-squeeze regime."
   },
   {
     "name": "Stephen Miran",
     "role": "Federal Reserve Governor / former CEA chair",
-    "watch": ["reserve currency", "overvalued dollar", "tariffs", "Treasury user fee", "currency adjustment", "Mar-a-Lago Accord"],
+    "watch": ["reserve currency", "overvalued dollar", "tariffs", "Treasury user fee", "currency adjustment", "international monetary system"],
     "why": "His published work discusses structural dollar overvaluation and mechanisms for changing international monetary arrangements."
   },
   {
-    "name": "U.S. Treasury",
-    "role": "Debt / FX authority",
-    "watch": ["buyback", "auction", "ESF", "FX intervention", "Treasury issuance", "foreign holdings"],
-    "why": "Debt-management and FX operations are direct transmission mechanisms."
+    "name": "Treasury debt-management / ESF officials",
+    "role": "Operational debt and FX policy",
+    "watch": ["auction sizes", "buybacks", "maturity mix", "ESF", "FX intervention", "dealer capacity", "foreign demand"],
+    "why": "Operational implementation can reveal policy intent before high-level rhetoric becomes explicit."
   },
   {
-    "name": "Federal Reserve",
+    "name": "USTR / Commerce",
+    "role": "Trade and industrial policy",
+    "watch": ["tariffs", "currency clauses", "trade deficit", "export competitiveness", "China", "Japan", "Europe"],
+    "why": "Trade policy can create incentives for currency realignment and can provoke foreign retaliation or capital-flow changes."
+  },
+  {
+    "name": "OMB / NEC / CEA",
+    "role": "Fiscal and economic-policy architecture",
+    "watch": ["deficits", "growth assumptions", "interest expense", "industrial policy", "dollar", "tariffs", "Fed"],
+    "why": "Budget and economic-policy choices determine whether a weaker-dollar strategy becomes a fiscal-dominance problem."
+  },
+  {
+    "name": "Federal Reserve Board / FOMC",
     "role": "Central bank",
-    "watch": ["FOMC", "repo", "swap lines", "balance sheet", "liquidity", "inflation expectations"],
-    "why": "Can create either a dollar squeeze or debasement regime depending on rates and liquidity policy."
+    "watch": ["FOMC", "repo", "swap lines", "balance sheet", "liquidity", "inflation expectations", "standing repo facility"],
+    "why": "The Fed is the main counterforce or amplifier for both debasement and dollar-funding-squeeze regimes."
   },
   {
-    "name": "BRICS / China / Russia / India / Gulf states",
-    "role": "External actors",
+    "name": "China PBOC / SAFE",
+    "role": "Largest strategic external de-dollarization actor",
+    "watch": ["Treasury holdings", "yuan settlement", "CIPS", "gold reserves", "capital controls", "FX reserves", "commodity settlement"],
+    "why": "China can reduce structural dollar dependence gradually without needing or wanting a disorderly dollar crash."
+  },
+  {
+    "name": "Japan MOF / BOJ",
+    "role": "Large Treasury holder / FX intervention actor",
+    "watch": ["Treasury holdings", "yen intervention", "BOJ rates", "repatriation", "FX hedging costs"],
+    "why": "Japan is a major marginal buyer of Treasuries and a key participant in coordinated currency policy."
+  },
+  {
+    "name": "ECB / SNB / European reserve managers",
+    "role": "Alternative reserve and funding system",
+    "watch": ["rates", "EUR", "CHF", "swap lines", "reserve allocation", "capital flows"],
+    "why": "The dollar is valued relative to alternatives; weakness or strength in Europe can offset U.S.-specific risk."
+  },
+  {
+    "name": "BRICS / India / Brazil / Russia / Gulf states",
+    "role": "Alternative settlement / reserve actors",
     "watch": ["local currency settlement", "CIPS", "CBDC", "BRICS payments", "Treasury holdings", "gold reserves", "oil settlement", "de-dollarization"],
     "why": "External actors can reduce structural dollar demand even without coordinating a sudden attack."
+  },
+  {
+    "name": "Global macro funds / CTAs / asset managers",
+    "role": "Fast private capital",
+    "watch": ["CFTC positioning", "FX forwards", "options", "Treasury futures", "basis trades", "risk reversals"],
+    "why": "Private capital can turn policy vulnerability into a rapid market move long before reserve managers change reported holdings."
+  },
+  {
+    "name": "Stablecoin issuers / custodians",
+    "role": "Digital-dollar infrastructure",
+    "watch": ["USDT", "USDC", "USD1", "reserve assets", "Treasury bills", "redemptions", "peg stability", "regulation"],
+    "why": "Stablecoins can strengthen transactional dollar usage while adding issuer, reserve and redemption channels that need separate monitoring."
   }
 ]

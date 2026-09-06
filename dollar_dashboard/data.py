@@ -10,14 +10,21 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-UA = {"User-Agent": "DollarCrisisDashboard/0.1 (+local research dashboard)"}
+UA = {"User-Agent": "DollarCrisisDashboard/2.0 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
     "Gold": "GC=F",
     "Bitcoin": "BTC-USD",
     "US Equities": "SPY",
+    "Developed ex-US Equities": "EFA",
     "Long Treasuries ETF": "TLT",
+    "TIPS ETF": "TIP",
+    "Gold ETF": "GLD",
+    "Broad Commodities": "DBC",
+    "Swiss Franc ETF": "FXF",
+    "USD ETF": "UUP",
+    "Oil": "CL=F",
     "EURUSD": "EURUSD=X",
     "USDJPY": "JPY=X",
     "USDCHF": "CHF=X",
@@ -37,6 +44,14 @@ FRED_SERIES = {
     "ON RRP (billions)": "RRPONTSYD",
     "VIX": "VIXCLS",
     "High-yield spread": "BAMLH0A0HYM2",
+    "10Y term premium": "THREEFYTP10",
+    "5Y5Y forward inflation": "T5YIFR",
+    "10Y-2Y curve": "T10Y2Y",
+    "10Y-3M curve": "T10Y3M",
+    "Financial Conditions Index": "NFCI",
+    "Reserve balances (billions)": "WRESBAL",
+    "Treasury General Account (billions)": "WTREGEN",
+    "Central bank liquidity swaps (millions)": "SWPT",
     "Foreign official Treasury holdings (millions)": "FORTREASPOS99990",
     "Foreign custody UST weekly (millions)": "WMTSEC1",
     "Foreign custody UST YoY change (millions)": "RESH4FGXAWXCH52NWW",

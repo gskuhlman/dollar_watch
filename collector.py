@@ -1,58 +1,70 @@
-"""Headless snapshot collector for cron / Windows Task Scheduler.
+"""Headless V2 collector for cron / Windows Task Scheduler.
 
-Usage:
-    python collector.py
-
-It fetches live data, scores the four regimes, calculates the model portfolio,
-saves the result to SQLite, and prints a concise change/alert summary.
+Fetches all public feeds, scores the four regimes, calculates the guarded portfolio,
+saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from dollar_dashboard.data import market_snapshot
-from dollar_dashboard.news import fetch_news, classify_news
+from dollar_dashboard.pipeline import collect_live_bundle
+from dollar_dashboard.news import classify_news
 from dollar_dashboard.scoring import DEFAULT_OVERRIDES, score
 from dollar_dashboard.portfolio import recommend
-from dollar_dashboard.storage import get_overrides, get_setting, recent_snapshots, save_snapshot
+from dollar_dashboard.storage import get_overrides, get_setting, recent_snapshots, save_snapshot, save_alerts
+from dollar_dashboard.alerts import generate_alerts, send_webhook
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text())
+DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 
 
 def main():
     prior = recent_snapshots(1)
     prior = prior[0] if prior else None
-    snap = market_snapshot()
-    news = fetch_news()
-    news_class = classify_news(news)
+    bundle = collect_live_bundle()
+    snap = bundle["snapshot"]
+    news_class = classify_news(bundle.get("news"))
     overrides = get_overrides(DEFAULT_OVERRIDES)
     scores = score(snap, news_class, overrides)
     portfolio_value = float(get_setting("portfolio_value", DEFAULT_SETTINGS["portfolio_value"]))
     baseline = get_setting("baseline_allocation", DEFAULT_SETTINGS["baseline_allocation"])
     min_trade = float(DEFAULT_SETTINGS.get("allocation_change_threshold_pct", 3.0))
-    portfolio, meta = recommend(scores["regimes"], baseline, portfolio_value, min_trade_pct=min_trade)
+    portfolio, meta = recommend(
+        scores["regimes"], baseline, portfolio_value, min_trade_pct=min_trade,
+        market_summary=snap.get("market_summary", {}), confidence=scores.get("confidence", 100),
+        max_turnover_pct=float(DEFAULT_SETTINGS.get("max_turnover_pct", 25.0)),
+    )
+    alerts = generate_alerts(scores, portfolio, prior, float(DEFAULT_SETTINGS.get("alert_threshold_points", 8)))
     payload = {
         **snap,
         "scores": scores,
         "news_scores": news_class.get("scores", {}),
-        "overrides": {k:v["value"] for k,v in overrides.items()},
+        "overrides": {k: v["value"] for k, v in overrides.items()},
         "portfolio": portfolio.to_dict(orient="records"),
+        "portfolio_meta": meta,
+        "alerts": alerts,
     }
     rid = save_snapshot(payload)
-    print(f"Saved snapshot #{rid}")
+    save_alerts(alerts)
+    print(f"Saved V2 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
-        old = None if not prior else prior.get("scores",{}).get("regimes",{}).get(name)
+        old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)
         delta = "" if old is None else f" ({val-float(old):+.1f})"
         print(f"{name}: {val:.1f}/100{delta}")
     trades = portfolio[portfolio["Action"] != "HOLD"]
     if trades.empty:
-        print("Portfolio: HOLD — no modeled trade clears the minimum threshold.")
+        print("Portfolio: HOLD — no guarded trade clears the minimum threshold.")
     else:
         print("Portfolio actions:")
         for _, r in trades.iterrows():
             print(f"  {r['Action']:6} {r['Asset']}: ${abs(r['Trade $']):,.0f} -> {r['Recommended %']:.1f}%")
+    if alerts:
+        print("Alerts:")
+        for a in alerts: print(f"  [{a['severity']}] {a['message']}")
+        sent, msg = send_webhook(alerts)
+        if sent: print(msg)
 
 
 if __name__ == "__main__":

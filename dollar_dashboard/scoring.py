@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any
 
 
@@ -14,13 +13,21 @@ def _v(d: dict, *path, default=None):
     return cur
 
 
+def _safe(x, default=0.0):
+    try:
+        x = float(x)
+        return default if math.isnan(x) else x
+    except Exception:
+        return default
+
+
 def _clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, float(x)))
 
 
 def _points(value, bands):
-    """bands is [(threshold, points)] sorted ascending. Uses last threshold met."""
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+    value = _safe(value, None)
+    if value is None:
         return 0
     pts = 0
     for threshold, p in bands:
@@ -28,9 +35,9 @@ def _points(value, bands):
             pts = p
     return pts
 
+
 DEFAULT_OVERRIDES = {
-    # Explicit analyst adjustments. Start neutral; change only after source review.
-    # 0 = no additional manual evidence, 50 = clearly material, 100 = acute/systemic.
+    # 0 = absent/benign; 50 = clearly material; 100 = acute/systemic.
     "broad_fx_intervention": 0,
     "fed_independence_pressure": 0,
     "treasury_auction_stress": 0,
@@ -38,8 +45,10 @@ DEFAULT_OVERRIDES = {
     "brics_payment_progress": 0,
     "central_bank_gold_rotation": 0,
     "stablecoin_dollar_support": 0,
+    "commodity_dedollarization": 0,
     "geopolitical_cyber_stress": 0,
     "institutional_credibility_stress": 0,
+    "capital_control_or_holder_fee_risk": 0,
 }
 
 
@@ -49,108 +58,181 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     n = news_classification.get("scores", {})
     ov = {k: float(v.get("value", 0)) for k, v in overrides.items()}
 
-    dxy_1m = _v(m, "DXY", "1m", default=0) or 0
-    dxy_3m = _v(m, "DXY", "3m", default=0) or 0
-    gold_1m = _v(m, "Gold", "1m", default=0) or 0
-    gold_3m = _v(m, "Gold", "3m", default=0) or 0
-    tlt_1m = _v(m, "Long Treasuries ETF", "1m", default=0) or 0
-    btc_1m = _v(m, "Bitcoin", "1m", default=0) or 0
-    eur_3m = _v(m, "EURUSD", "3m", default=0) or 0
-    jpy_3m = _v(m, "USDJPY", "3m", default=0) or 0
+    dxy_1m = _safe(_v(m, "DXY", "1m"))
+    dxy_3m = _safe(_v(m, "DXY", "3m"))
+    dxy_1y = _safe(_v(m, "DXY", "1y"))
+    gold_3m = _safe(_v(m, "Gold", "3m"))
+    tlt_1m = _safe(_v(m, "Long Treasuries ETF", "1m"))
+    eur_3m = _safe(_v(m, "EURUSD", "3m"))
+    jpy_3m = _safe(_v(m, "USDJPY", "3m"))
+    chf_3m = _safe(_v(m, "USDCHF", "3m"))
 
-    y10 = _v(f, "10Y Treasury", "last", default=0) or 0
-    y30 = _v(f, "30Y Treasury", "last", default=0) or 0
-    y30_3m = _v(f, "30Y Treasury", "3m_change", default=0) or 0
-    breakeven = _v(f, "10Y breakeven inflation", "last", default=0) or 0
-    breakeven_3m = _v(f, "10Y breakeven inflation", "3m_change", default=0) or 0
-    real10 = _v(f, "10Y TIPS real yield", "last", default=0) or 0
-    vix = _v(f, "VIX", "last", default=0) or 0
-    hy = _v(f, "High-yield spread", "last", default=0) or 0
-    foreign_custody_yoy = _v(f, "Foreign custody UST YoY change (millions)", "last", default=0) or 0
-    foreign_custody_wow = _v(f, "Foreign custody UST WoW change (millions)", "last", default=0) or 0
-    foreign_official_3m = _v(f, "Foreign official Treasury holdings (millions)", "3m_change", default=0) or 0
-    auction_auto = float(snapshot.get("auction_stress_auto", 0) or 0)
+    y30 = _safe(_v(f, "30Y Treasury", "last"))
+    y30_3m = _safe(_v(f, "30Y Treasury", "3m_change"))
+    breakeven = _safe(_v(f, "10Y breakeven inflation", "last"))
+    breakeven_3m = _safe(_v(f, "10Y breakeven inflation", "3m_change"))
+    term_premium = _safe(_v(f, "10Y term premium", "last"))
+    term_premium_3m = _safe(_v(f, "10Y term premium", "3m_change"))
+    vix = _safe(_v(f, "VIX", "last"))
+    hy = _safe(_v(f, "High-yield spread", "last"))
+    nfci = _safe(_v(f, "Financial Conditions Index", "last"))
+    swaps = _safe(_v(f, "Central bank liquidity swaps (millions)", "last"))
+    swaps_1m = _safe(_v(f, "Central bank liquidity swaps (millions)", "1m_change"))
+    foreign_custody_yoy = _safe(_v(f, "Foreign custody UST YoY change (millions)", "last"))
+    foreign_official_3m = _safe(_v(f, "Foreign official Treasury holdings (millions)", "3m_change"))
+
+    auction_auto = _safe(snapshot.get("auction_stress_auto"))
+    cftc_pressure = _safe(snapshot.get("cftc_usd_downside_pressure"))
+    tic_pressure = _safe(snapshot.get("tic_dedollarization_pressure"))
+    stablecoin_auto = _safe(snapshot.get("stablecoin_dollar_support_auto"))
+    data_confidence = _safe(snapshot.get("data_confidence"), 50.0)
 
     drivers = {"managed_devaluation": [], "fiscal_inflation": [], "dollar_squeeze": [], "reserve_confidence": []}
 
-    # Managed devaluation: falling dollar + policy intent/intervention + foreign FX appreciation.
-    md = 18
-    if dxy_3m < -0.03:
-        md += 12; drivers["managed_devaluation"].append("DXY down >3% over ~3 months")
-    if dxy_3m < -0.07:
-        md += 10; drivers["managed_devaluation"].append("DXY down >7% over ~3 months")
-    if eur_3m > 0.03:
-        md += 5; drivers["managed_devaluation"].append("EUR strengthening vs USD")
-    if jpy_3m < -0.03:
-        md += 5; drivers["managed_devaluation"].append("JPY strengthening vs USD")
-    md += 0.18 * ov.get("broad_fx_intervention", 0)
-    md += 0.12 * ov.get("fed_independence_pressure", 0)
-    md += max(-5, min(12, 2.0 * n.get("policy_devaluation", 0)))
-    md -= 0.10 * ov.get("stablecoin_dollar_support", 0)
-    managed = _clamp(md)
+    # ----- Leading/transmission components -----
+    policy_intent = 12.0
+    policy_intent += 0.36 * ov.get("broad_fx_intervention", 0)
+    policy_intent += 0.23 * ov.get("fed_independence_pressure", 0)
+    policy_intent += 0.16 * ov.get("capital_control_or_holder_fee_risk", 0)
+    policy_intent += max(-12, min(20, 2.0 * n.get("policy_devaluation", 0)))
+    policy_intent = _clamp(policy_intent)
 
-    # Fiscal/inflation: high/rising long yields, breakevens, gold, auction/credibility stress.
-    fi = 18
-    fi += _points(y30, [(4.5, 6), (5.0, 12), (5.5, 20), (6.0, 28)])
+    positioning = _clamp(cftc_pressure if cftc_pressure else 25.0)
+
+    external = 0.55 * (tic_pressure if tic_pressure else 15.0)
+    external += 0.15 * ov.get("foreign_official_selling", 0)
+    external += 0.20 * ov.get("brics_payment_progress", 0)
+    external += 0.13 * ov.get("central_bank_gold_rotation", 0)
+    external += 0.16 * ov.get("commodity_dedollarization", 0)
+    external += max(-8, min(20, 2.0 * n.get("external_dedollarization", 0)))
+    if foreign_custody_yoy < -100000:
+        external += 8
+    if foreign_official_3m < -100000:
+        external += 7
+    external = _clamp(external)
+
+    support = 0.65 * (stablecoin_auto if stablecoin_auto else 20.0)
+    support += 0.25 * ov.get("stablecoin_dollar_support", 0)
+    support += max(-8, min(18, 2.0 * n.get("dollar_support", 0)))
+    support = _clamp(support)
+
+    fiscal_term = 15.0
+    fiscal_term += _points(y30, [(4.5, 5), (5.0, 12), (5.5, 20), (6.0, 30)])
     if y30_3m > 0.25:
-        fi += 8; drivers["fiscal_inflation"].append("30Y yield up >25bp over ~3 months")
+        fiscal_term += 8
     if y30_3m > 0.60:
-        fi += 8; drivers["fiscal_inflation"].append("30Y yield up >60bp over ~3 months")
-    if breakeven > 2.5:
-        fi += 5; drivers["fiscal_inflation"].append("10Y inflation breakeven >2.5%")
-    if breakeven_3m > 0.20:
-        fi += 6; drivers["fiscal_inflation"].append("Inflation expectations rising")
+        fiscal_term += 8
+    if term_premium > 0.65:
+        fiscal_term += 8
+    if term_premium > 1.00:
+        fiscal_term += 10
+    if term_premium_3m > 0.20:
+        fiscal_term += 7
+    fiscal_term += 0.22 * auction_auto
+    fiscal_term += 0.10 * ov.get("treasury_auction_stress", 0)
+    fiscal_term += 0.12 * ov.get("institutional_credibility_stress", 0)
+    fiscal_term = _clamp(fiscal_term)
+
+    plumbing = 8.0
+    plumbing += _points(vix, [(20, 8), (30, 18), (40, 30)])
+    plumbing += _points(hy, [(4, 6), (5, 14), (7, 25)])
+    plumbing += _points(nfci, [(0.0, 5), (0.5, 12), (1.0, 20)])
+    if swaps > 5000 or swaps_1m > 2500:
+        plumbing += 12
+    plumbing += 0.30 * auction_auto
+    plumbing += 0.12 * ov.get("geopolitical_cyber_stress", 0)
+    plumbing += max(0, min(20, 2.0 * n.get("funding_stress", 0)))
+    plumbing = _clamp(plumbing)
+
+    institutional = _clamp(
+        8 + 0.38 * ov.get("institutional_credibility_stress", 0)
+        + 0.24 * ov.get("fed_independence_pressure", 0)
+        + 0.25 * ov.get("capital_control_or_holder_fee_risk", 0)
+        + max(0, min(18, 2.0 * n.get("institutional_stress", 0)))
+    )
+
+    # ----- Market confirmation -----
+    confirmation = 8.0
+    toxic_legs = 0
+    if dxy_3m < -0.03:
+        confirmation += 12; toxic_legs += 1
+    if dxy_3m < -0.07:
+        confirmation += 8
+    if y30_3m > 0.25:
+        confirmation += 12; toxic_legs += 1
     if gold_3m > 0.08:
-        fi += 7; drivers["fiscal_inflation"].append("Gold up >8% over ~3 months")
-    fi += 0.18 * auction_auto
+        confirmation += 12; toxic_legs += 1
+    if toxic_legs >= 2:
+        confirmation += 8
+    if toxic_legs == 3:
+        confirmation += 10
+    if eur_3m > 0.03:
+        confirmation += 4
+    if jpy_3m < -0.03:
+        confirmation += 4
+    if chf_3m < -0.03:
+        confirmation += 4
+    confirmation = _clamp(confirmation)
+
+    early_warning = _clamp(
+        0.22 * policy_intent + 0.18 * positioning + 0.20 * external
+        + 0.18 * fiscal_term + 0.12 * plumbing + 0.10 * institutional
+        - 0.10 * max(0, support - 50)
+    )
+
+    # ----- Four regime scores -----
+    managed = 12.0 + 0.44 * policy_intent + 0.18 * positioning + 0.26 * confirmation - 0.10 * support
+    if dxy_3m < -0.03:
+        drivers["managed_devaluation"].append("DXY down >3% over ~3 months")
+    if cftc_pressure >= 65:
+        drivers["managed_devaluation"].append("CFTC FX positioning is tilted toward USD downside")
+    if policy_intent >= 55:
+        drivers["managed_devaluation"].append("Policy-intent indicators are elevated")
+    managed = _clamp(managed)
+
+    fiscal = 10.0 + 0.58 * fiscal_term + 0.15 * institutional + 0.18 * confirmation
+    if breakeven > 2.5:
+        fiscal += 5; drivers["fiscal_inflation"].append("10Y breakeven inflation >2.5%")
+    if breakeven_3m > 0.20:
+        fiscal += 5; drivers["fiscal_inflation"].append("Inflation expectations rising")
+    if term_premium > 0.65:
+        drivers["fiscal_inflation"].append("10Y term premium is elevated")
     if auction_auto >= 40:
         drivers["fiscal_inflation"].append(f"Treasury auction absorption stress {auction_auto:.0f}/100")
-    fi += 0.10 * ov.get("treasury_auction_stress", 0)
-    fi += 0.10 * ov.get("institutional_credibility_stress", 0)
-    fiscal = _clamp(fi)
+    fiscal = _clamp(fiscal)
 
-    # Dollar squeeze: dollar strengthens while risk/funding stress rises.
-    ds = 10
+    squeeze = 8.0 + 0.64 * plumbing
     if dxy_1m > 0.03:
-        ds += 12; drivers["dollar_squeeze"].append("DXY up >3% in ~1 month")
+        squeeze += 12; drivers["dollar_squeeze"].append("DXY up >3% in ~1 month")
     if dxy_1m > 0.06:
-        ds += 10; drivers["dollar_squeeze"].append("DXY up >6% in ~1 month")
-    ds += _points(vix, [(20, 8), (30, 16), (40, 25)])
-    ds += _points(hy, [(4, 6), (5, 12), (7, 20)])
-    ds += max(0, min(16, 2.0 * n.get("funding_stress", 0)))
+        squeeze += 8
+    if swaps > 5000 or swaps_1m > 2500:
+        drivers["dollar_squeeze"].append("Federal Reserve foreign-currency swap usage is rising/elevated")
     if tlt_1m < -0.05:
-        ds += 5; drivers["dollar_squeeze"].append("Long bonds under pressure")
-    squeeze = _clamp(ds)
+        squeeze += 4; drivers["dollar_squeeze"].append("Long Treasuries under pressure during funding stress")
+    squeeze = _clamp(squeeze)
 
-    # Reserve-confidence: toxic combination: USD down + long yields up + gold up + external selling.
-    rc = 8
-    toxic = (dxy_3m < -0.03) + (y30_3m > 0.25) + (gold_3m > 0.08)
-    if toxic >= 2:
-        rc += 15; drivers["reserve_confidence"].append("Two legs of USD-down / long-yields-up / gold-up are active")
-    if toxic == 3:
-        rc += 18; drivers["reserve_confidence"].append("Toxic trio active: USD down + long yields up + gold up")
+    reserve = 5.0 + 0.30 * external + 0.21 * fiscal_term + 0.17 * institutional + 0.30 * confirmation - 0.10 * support
+    if toxic_legs >= 2:
+        drivers["reserve_confidence"].append("Multiple legs of USD-down / long-yields-up / gold-up are active")
+    if toxic_legs == 3:
+        drivers["reserve_confidence"].append("Toxic trio active: USD down + long yields up + gold up")
+    if tic_pressure >= 50:
+        drivers["reserve_confidence"].append("Country-level TIC holdings show material de-dollarization pressure")
     if foreign_custody_yoy < -100000:
-        rc += 7; drivers["reserve_confidence"].append("Foreign-custody Treasury holdings down >$100B YoY")
-    if foreign_custody_yoy < -250000:
-        rc += 7; drivers["reserve_confidence"].append("Foreign-custody Treasury holdings down >$250B YoY")
-    if foreign_official_3m < -100000:
-        rc += 6; drivers["reserve_confidence"].append("Foreign official Treasury holdings fell >$100B over ~3 months")
-    rc += 0.10 * ov.get("foreign_official_selling", 0)
-    rc += 0.10 * ov.get("brics_payment_progress", 0)
-    rc += 0.10 * ov.get("central_bank_gold_rotation", 0)
-    rc += 0.08 * ov.get("institutional_credibility_stress", 0)
-    rc += max(-4, min(14, 1.7 * n.get("external_dedollarization", 0)))
-    rc -= 0.08 * ov.get("stablecoin_dollar_support", 0)
-    reserve = _clamp(rc)
+        drivers["reserve_confidence"].append("Foreign-custody Treasuries down >$100B YoY")
+    reserve = _clamp(reserve)
 
-    # Supporting component scores for interpretation.
-    foreign_auto = 0
-    if foreign_custody_yoy < -100000: foreign_auto += 12
-    if foreign_custody_yoy < -250000: foreign_auto += 10
-    if foreign_official_3m < -100000: foreign_auto += 8
-    external = _clamp(15 + foreign_auto + 0.20*ov.get("brics_payment_progress",0) + 0.12*ov.get("foreign_official_selling",0) + 0.15*ov.get("central_bank_gold_rotation",0) + max(-5, min(20, 2*n.get("external_dedollarization",0))))
-    support = _clamp(20 + 0.45*ov.get("stablecoin_dollar_support",0) + max(-5, min(15, 2*n.get("dollar_support",0))))
-    plumbing = _clamp(8 + 0.55*auction_auto + 0.20*ov.get("treasury_auction_stress",0) + _points(vix, [(25,10),(35,20)]) + max(0,min(20,2*n.get("funding_stress",0))))
+    if early_warning >= 55 and confirmation < 40:
+        phase = "PRECONDITION / EARLY WARNING"
+    elif early_warning >= 50 and confirmation >= 40:
+        phase = "TRANSITION"
+    elif confirmation >= 60 and max(managed, fiscal, reserve, squeeze) >= 70:
+        phase = "CONFIRMED STRESS"
+    elif max(managed, fiscal, reserve, squeeze) >= 50:
+        phase = "WATCH / MIXED"
+    else:
+        phase = "QUIET / NORMAL"
 
     return {
         "regimes": {
@@ -160,16 +242,28 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             "Reserve-confidence crisis": round(reserve, 1),
         },
         "components": {
+            "Policy intent / intervention": round(policy_intent, 1),
+            "FX positioning pressure": round(positioning, 1),
             "External de-dollarization pressure": round(external, 1),
             "Structural dollar support": round(support, 1),
+            "Fiscal / term-premium pressure": round(fiscal_term, 1),
             "Treasury / funding plumbing stress": round(plumbing, 1),
+            "Institutional credibility stress": round(institutional, 1),
+            "Market confirmation": round(confirmation, 1),
         },
+        "early_warning_index": round(early_warning, 1),
+        "confirmation_index": round(confirmation, 1),
+        "phase": phase,
+        "confidence": round(data_confidence, 1),
         "drivers": drivers,
         "diagnostics": {
-            "dxy_1m": dxy_1m, "dxy_3m": dxy_3m, "gold_3m": gold_3m,
+            "dxy_1m": dxy_1m, "dxy_3m": dxy_3m, "dxy_1y": dxy_1y, "gold_3m": gold_3m,
             "y30": y30, "y30_3m": y30_3m, "breakeven": breakeven,
-            "real10": real10, "vix": vix, "hy_spread": hy,
-            "foreign_custody_yoy_millions": foreign_custody_yoy, "foreign_custody_wow_millions": foreign_custody_wow,
-            "foreign_official_3m_change_millions": foreign_official_3m, "auction_stress_auto": auction_auto,
+            "term_premium": term_premium, "term_premium_3m": term_premium_3m,
+            "vix": vix, "hy_spread": hy, "nfci": nfci, "central_bank_swaps": swaps,
+            "foreign_custody_yoy_millions": foreign_custody_yoy,
+            "foreign_official_3m_change_millions": foreign_official_3m,
+            "auction_stress_auto": auction_auto, "cftc_usd_downside_pressure": cftc_pressure,
+            "tic_dedollarization_pressure": tic_pressure, "stablecoin_dollar_support_auto": stablecoin_auto,
         },
     }

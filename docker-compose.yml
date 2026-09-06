@@ -13,3 +13,5 @@ services:
       # - LMSTUDIO_BASE_URL=http://192.168.1.204:1234/v1
       # - LMSTUDIO_MODEL=your-loaded-model-name
       # - LMSTUDIO_API_KEY=lm-studio
+      # Optional alert route (for example, an n8n webhook):
+      # - DOLLAR_DASHBOARD_WEBHOOK=http://192.168.x.x:5678/webhook/dollar-dashboard

@@ -1,37 +1,60 @@
-# Dollar Crisis Early Warning Dashboard
+# Dollar Crisis Early Warning Dashboard — Version 2
 
-A local Python/Streamlit application for monitoring four distinct U.S.-dollar risk regimes and translating them into an auditable portfolio recommendation.
+A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## What it does
+## What changed in V2
 
-- Pulls market prices (DXY proxy, gold, Bitcoin, Treasuries, equities, EUR/USD, USD/JPY, USD/CHF, USD/CNY).
-- Pulls public FRED data for Treasury yields, TIPS real yields, inflation breakevens, SOFR, Fed balance sheet, reverse repo, VIX, high-yield spreads, foreign-official Treasury holdings and weekly foreign custody changes.
-- Pulls official Treasury FiscalData auction results and measures bid-to-cover / bidder-mix absorption stress for major coupon tenors.
-- Discovers current policy/de-dollarization/funding/stablecoin headlines through Google News RSS.
-- Tracks key policymakers and external actors.
-- Lets the analyst explicitly score non-price facts such as FX intervention, Treasury auction stress, foreign official selling, BRICS payment progress, Fed-independence pressure, gold reserve rotation and structural stablecoin support.
-- Produces four independent 0–100 risk scores:
-  1. Managed dollar devaluation
-  2. Fiscal / inflation crisis
-  3. Dollar funding squeeze
-  4. Reserve-confidence crisis
-- Produces BUY / HOLD / REDUCE allocation changes in dollars.
-- Saves snapshots to SQLite and charts score history.
-- Optionally sends the current dashboard snapshot to a local OpenAI-compatible model (LM Studio, vLLM, etc.) for red-team analysis.
+V1 mainly combined market/FRED/Treasury-auction data with analyst overrides. V2 adds the leading information that was most likely to be missing before price confirmation:
+
+- **CFTC Traders in Financial Futures positioning** for major FX contracts.
+- **Treasury TIC country-level Treasury holdings** and foreign-official trends.
+- **Stablecoin supply / USD1 monitoring** as a structural digital-dollar-demand signal.
+- **10-year term premium**, curve, financial-conditions and Fed foreign swap signals.
+- **Data freshness/confidence scoring** with automatic reduction of portfolio aggressiveness when data is missing/stale.
+- **Early Warning vs Market Confirmation** as separate indexes.
+- **Anti-chasing and max-turnover guardrails** on portfolio recommendations.
+- **Scenario stress tests** comparing current and recommended allocations.
+- **Evidence journal**, alerts, alert history and optional generic webhook delivery.
+- A much larger, prioritized product backlog in `TODO_V2.md`.
+
+## Core regimes
+
+1. **Managed dollar devaluation** — policy intentionally pushes the dollar moderately lower.
+2. **Fiscal / inflation crisis** — debt, long yields, term premium and inflation credibility become the dominant problem.
+3. **Dollar funding squeeze** — global stress creates urgent demand for dollars even if long-run dollar confidence is deteriorating.
+4. **Reserve-confidence crisis** — investors/official institutions reduce dollar/Treasury exposure and market prices confirm a loss of confidence.
+
+The four scores are **risk indicators, not statistically calibrated probabilities**. V2 separately reports a data-confidence score so a 70/100 regime score based on weak data is not treated like a 70/100 score supported by all feeds.
+
+## Public data sources used by V2
+
+- Yahoo Finance via `yfinance`: DXY proxy, gold, Bitcoin, equities, Treasury/TIPS/commodity/CHF proxies and major FX crosses.
+- FRED CSV: Treasury yields, TIPS, breakevens, term premium, financial conditions, SOFR, Fed balance sheet, reserves, TGA, central-bank swap usage and foreign-custody series.
+- U.S. Treasury FiscalData: auction bid-to-cover and bidder mix.
+- U.S. Treasury TIC Table 5: major foreign holders and foreign-official Treasury holdings.
+- CFTC public Socrata dataset: Traders in Financial Futures positioning.
+- DefiLlama public stablecoin endpoints: stablecoin supply, history and current peg information.
+- Google News RSS: headline discovery/triage only.
 
 ## Windows setup
 
-Streamlit 1.63 supports Python 3.10–3.14. Python 3.11 or 3.12 is a conservative choice.
+Python 3.11 or 3.12 is a conservative choice.
 
 ```powershell
-cd dollar_crisis_dashboard
+cd dollar_crisis_dashboard_v2
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then open `http://localhost:8501` if it does not open automatically.
+Or double-click:
+
+```text
+run_windows.bat
+```
+
+Open `http://localhost:8501` if Streamlit does not open it automatically.
 
 ## Docker / Portainer
 
@@ -41,34 +64,85 @@ docker compose up -d --build
 
 Open `http://<docker-host>:8501`.
 
-The SQLite database is persisted in `./data`.
+The SQLite database persists in `./data`.
 
-### Local LM Studio from Docker
+## Scheduled collection
 
-Set `LMSTUDIO_BASE_URL` in `docker-compose.yml` or type the URL in the Streamlit sidebar. If LM Studio is on another LAN computer, use that computer's LAN IP and OpenAI-compatible API port, ending in `/v1`.
+Run:
 
-Example:
-
-```text
-http://192.168.1.204:1234/v1
+```bash
+python collector.py
 ```
 
-(Use the actual port configured by LM Studio.)
+The collector saves a full V2 snapshot and alerts. On Windows, use Task Scheduler; examples are in `scripts/`.
 
-## Workflow I recommend
+### Generic webhook alerts
 
-1. Open the dashboard and refresh live data.
-2. Review the headline monitor and primary reporting.
-3. Update the analyst-input sliders only when evidence supports a change.
-4. Review the four regime scores and active market drivers.
-5. Review the Portfolio tab. Trades below the configured minimum threshold remain HOLD.
-6. Run the local LLM red-team analysis if desired.
-7. Save the snapshot so the next review measures *change*, not just level.
+Set an environment variable:
+
+```text
+DOLLAR_DASHBOARD_WEBHOOK=https://your-webhook-endpoint
+```
+
+When meaningful alerts exist, `collector.py` will POST:
+
+```json
+{"alerts": [...]}
+```
+
+This is suitable for an n8n webhook, a local automation server, or another alert router.
+
+## Local LM Studio
+
+Set the base URL in the dashboard sidebar or define:
+
+```text
+LMSTUDIO_BASE_URL=http://192.168.1.204:1234/v1
+LMSTUDIO_MODEL=<optional model id>
+```
+
+Use the actual OpenAI-compatible port configured by LM Studio. V2 sends the current evidence snapshot to the local model and asks for:
+
+- What changed
+- Causal interpretation
+- Red-team/counter-thesis
+- Missing factors
+- Portfolio actions
+- Reversal triggers
+
+## Portfolio engine
+
+The default baseline remains close to the portfolio discussed during development, with a new zero-weight broad-commodity bucket that V2 may add when inflation/fiscal regimes justify it.
+
+The portfolio engine now applies four guardrails:
+
+1. Regime scores below 35 do not create a crisis overlay.
+2. Low source confidence reduces the size of the overlay.
+3. A one-run turnover limit prevents large mechanical changes.
+4. Large recent gains in common hedges can cap additional buys so the app does not blindly chase gold/Bitcoin/foreign assets after a sharp move.
+
+Every non-HOLD trade includes a reversal trigger.
+
+## Tests
+
+Offline tests do not require live internet feeds:
+
+```bash
+python test_engine.py
+python test_v2.py
+```
+
+The V2 test suite covers TIC parsing, CFTC positioning summaries, stablecoin summaries, scoring, portfolio constraints and scenario stress tests.
 
 ## Important limitations
 
-- Headline keyword scoring is intentionally low-confidence. It is not sentiment analysis and not a substitute for reading source material.
-- Yahoo Finance is convenient but not institutional market data.
-- V1 automatically pulls Treasury auction absorption metrics and aggregate foreign-official/custody Treasury series, but it does not yet calculate when-issued auction tails, detailed country-level TIC flows, CFTC positions, FX option skew or cross-currency basis.
-- Risk scores are transparent evidence-weighted indicators, not statistically calibrated probabilities.
-- The portfolio model is a macro risk-allocation framework, not individualized fiduciary advice.
+- **True auction tails** require a reliable when-issued yield feed and are not yet included.
+- **FX option risk reversals and cross-currency basis** generally require institutional or paid market data; they remain high-priority roadmap items.
+- TIC data are monthly and lagged by design.
+- CFTC positions are weekly and reported with a publication lag.
+- Stablecoin reserve composition differs by issuer; V2 does not assume all stablecoin supply is invested in Treasury bills.
+- Google News RSS is for discovery. Policy scores should be backed by primary documents or high-quality reporting before analyst overrides are changed.
+- Stress-test returns are transparent scenario assumptions, not forecasts.
+- The tool is research/decision support, not individualized fiduciary investment advice.
+
+See **`TODO_V2.md`** for the full ranked roadmap.

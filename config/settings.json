@@ -7,8 +7,11 @@
     "Developed ex-US equities (unhedged)": 17.5,
     "US real-asset / value equities": 10.0,
     "CHF / defensive FX": 7.5,
-    "Bitcoin": 5.0
+    "Bitcoin": 5.0,
+    "Broad commodities / energy": 0.0
   },
   "alert_threshold_points": 8,
-  "allocation_change_threshold_pct": 3.0
+  "allocation_change_threshold_pct": 3.0,
+  "max_turnover_pct": 25.0,
+  "version": "2.0"
 }

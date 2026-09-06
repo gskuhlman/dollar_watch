@@ -108,3 +108,95 @@ def set_setting(key: str, value) -> None:
     )
     con.commit()
     con.close()
+
+
+def add_event(category: str, actor: str, title: str, source_url: str = "", impact: float = 0.0, notes: str = "") -> int:
+    con = connect()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            category TEXT NOT NULL,
+            actor TEXT,
+            title TEXT NOT NULL,
+            source_url TEXT,
+            impact REAL NOT NULL DEFAULT 0,
+            notes TEXT
+        )
+    """)
+    cur = con.execute(
+        "INSERT INTO events(created_at,category,actor,title,source_url,impact,notes) VALUES (?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(), category, actor, title, source_url, float(impact), notes),
+    )
+    con.commit()
+    rid = int(cur.lastrowid)
+    con.close()
+    return rid
+
+
+def recent_events(limit: int = 100) -> list[dict]:
+    con = connect()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            category TEXT NOT NULL,
+            actor TEXT,
+            title TEXT NOT NULL,
+            source_url TEXT,
+            impact REAL NOT NULL DEFAULT 0,
+            notes TEXT
+        )
+    """)
+    rows = con.execute(
+        "SELECT id,created_at,category,actor,title,source_url,impact,notes FROM events ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    con.close()
+    keys = ["id","created_at","category","actor","title","source_url","impact","notes"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def save_alerts(alerts: list[dict]) -> None:
+    if not alerts:
+        return
+    con = connect()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            payload TEXT
+        )
+    """)
+    for a in alerts:
+        con.execute(
+            "INSERT INTO alerts(created_at,severity,kind,message,payload) VALUES (?,?,?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), a.get("severity","INFO"), a.get("kind","general"), a.get("message",""), json.dumps(a, default=str)),
+        )
+    con.commit()
+    con.close()
+
+
+def recent_alerts(limit: int = 100) -> list[dict]:
+    con = connect()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            payload TEXT
+        )
+    """)
+    rows = con.execute("SELECT id,created_at,severity,kind,message,payload FROM alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    con.close()
+    out=[]
+    for rid, created, severity, kind, message, payload in rows:
+        d={"id":rid,"created_at":created,"severity":severity,"kind":kind,"message":message}
+        try: d["payload"]=json.loads(payload) if payload else {}
+        except Exception: d["payload"]={}
+        out.append(d)
+    return out
