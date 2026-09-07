@@ -51,7 +51,7 @@ def check_source_url(url: str, timeout: int = 8) -> dict:
     if not url:
         return {**info, "reachable": False, "http_status": None, "note": "No source URL supplied."}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.0"}, stream=True)
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.2"}, stream=True)
         ok = 200 <= r.status_code < 400
         return {
             **info,
@@ -90,7 +90,7 @@ def fetch_source_text(url: str, max_chars: int = 30000, timeout: int = 12) -> di
     if not url:
         return {"ok": False, "text": "", "error": "No URL supplied", **classify_source(url)}
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.0"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"User-Agent": "dollar_watch/3.2"})
         r.raise_for_status()
         ctype = (r.headers.get("content-type") or "").lower()
         raw = r.text
@@ -110,4 +110,20 @@ def fetch_source_text(url: str, max_chars: int = 30000, timeout: int = 12) -> di
         text="\n".join(line.strip() for line in raw.splitlines() if line.strip())[:max_chars]
         return {"ok": True, "text": text, "final_url": r.url, "http_status": r.status_code, **classify_source(r.url)}
     except Exception as exc:
+        # V3.2: canonical official pages occasionally return transient 503/403 responses.
+        # A dated last-known official cache is preferable to converting that network event into
+        # "no evidence". The fallback is explicit and remains auditable in the UI.
+        try:
+            from .official_policy import cached_official_source_text
+            cached = cached_official_source_text(url)
+            if cached.get("ok"):
+                text = str(cached.get("text") or "")[:max_chars]
+                return {
+                    "ok": True, "text": text, "final_url": cached.get("final_url") or url,
+                    "http_status": None, "cache_fallback": True, "cache_kind": cached.get("cache_kind"),
+                    "cached_at": cached.get("cached_at"), "live_fetch_error": str(exc),
+                    **classify_source(cached.get("final_url") or url),
+                }
+        except Exception:
+            pass
         return {"ok": False, "text": "", "error": str(exc), **classify_source(url)}

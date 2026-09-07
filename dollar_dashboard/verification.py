@@ -9,8 +9,9 @@ import requests
 import pandas as pd
 
 from .evidence import classify_source, fetch_source_text
+from .official_policy import (TREASURY_BESSENT_UEDA, MOF_US_JAPAN_20260831, TREASURY_GENIUS_20260817, NYFED_Q2_2026_FX, NYFED_Q1_2026_FX, MOF_FX_MONTHLY_INDEX)
 
-UA={"User-Agent":"dollar_watch/3.0 (+local research dashboard)"}
+UA={"User-Agent":"dollar_watch/3.2 (+local research dashboard)"}
 
 # Deterministic primary-source destinations. These do not assert that a claim is true;
 # they put the analyst at the authoritative evidence surface first.
@@ -18,7 +19,12 @@ PRIMARY_ADAPTERS={
     'FX intervention':[
         ('US Treasury ESF','https://home.treasury.gov/policy-issues/international/exchange-stabilization-fund'),
         ('NY Fed FX operations','https://www.newyorkfed.org/markets/international-market-operations/foreign-exchange-operations'),
-        ('Japan MOF intervention','https://www.mof.go.jp/english/policy/international_policy/reference/feio/index.htm'),
+        ('Japan MOF intervention','https://www.mof.go.jp/english/policy/international_policy/reference/feio/index.html'),
+        ('Bank of Japan','https://www.boj.or.jp/en/'),
+    ],
+    'Bilateral FX policy':[
+        ('US Treasury press releases','https://home.treasury.gov/news/press-releases'),
+        ('Japan MOF international policy','https://www.mof.go.jp/english/policy/international_policy/'),
         ('Bank of Japan','https://www.boj.or.jp/en/'),
     ],
     'Treasury / Bessent':[
@@ -70,6 +76,7 @@ STOPWORDS={
 BUCKET_ANCHORS={
     'FX intervention': {'intervention','exchange','currency','yen','dollar','foreign exchange','esf','fx'},
     'Treasury / Bessent': {'treasury','buyback','debt','financing','bessent','exchange','currency'},
+    'Bilateral FX policy': {'yen','exchange','currency','volatility','japan','treasury','market'},
     'Fed / Warsh': {'federal reserve','fed','warsh','monetary','rates','balance sheet','fomc'},
     'Funding stress': {'sofr','repo','fima','swap','liquidity','funding','dollar'},
     'Central-bank gold': {'gold','reserve','central bank','bullion','repatriation'},
@@ -85,6 +92,10 @@ MIN_RELEVANCE_SCORE=35.0
 # V3.0 route-aware retrieval: prefer policy/news/speech surfaces and reject generic
 # privacy/help/assistance/navigation pages before semantic ranking.
 ROUTE_RULES={
+    'Bilateral FX policy': {
+        'prefer':('/news/press-releases','/policy/international_policy','/newsevents'),
+        'block':('/privacy','/contact','/financial-assistance'),
+    },
     'Treasury / Bessent': {
         'prefer':('/news/press-releases','/news/press-releases/statements-remarks','/policy-issues/financing-the-government'),
         'block':('/privacy','/financial-assistance','/services','/foia','/contact','/about'),
@@ -203,17 +214,17 @@ def verification_bucket_for_news(bucket:str, claim:str='')->str:
     return NEWS_BUCKET_MAP.get(b,b)
 
 SYSTEMATIC_POLICY_PROBES=[
-    {"priority":"P0","bucket":"Treasury / Bessent","claim":"Treasury publicly advocates broad depreciation of the U.S. dollar as a policy objective.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":10.0},
-    {"priority":"P0","bucket":"Treasury / Bessent","claim":"Treasury publicly supports a strong or broadly stable U.S. dollar rather than deliberate broad depreciation.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"managed_devaluation","effect_direction":-1,"effect_weight":8.0},
-    {"priority":"P0","bucket":"Administration / White House","claim":"The White House publicly advocates deliberate broad U.S.-dollar depreciation or explicitly uses interest-rate policy to weaken the dollar.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.whitehouse.gov/remarks/","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":10.0},
-    {"priority":"P0","bucket":"FX intervention","claim":"U.S. or Japanese officials publicly signal active or imminent foreign-exchange intervention affecting the dollar-yen rate.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":7.0},
-    {"priority":"P0","bucket":"Funding stress","claim":"Federal Reserve or New York Fed communications report material U.S.-dollar funding-market stress or exceptional dollar-liquidity support.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.newyorkfed.org/markets","effect_target":"dollar_funding_squeeze","effect_direction":1,"effect_weight":8.0},
-    {"priority":"P0","bucket":"Fed / Warsh","claim":"Official communications document political pressure on Federal Reserve independence for currency or interest-rate objectives.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.federalreserve.gov/newsevents/speeches.htm","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":6.0},
-    {"priority":"P1","bucket":"BRICS / de-dollarization","claim":"Official BRICS communications report concrete implementation of non-dollar settlement or payment infrastructure.","source":"SYSTEMATIC POLICY PROBE","link":"https://brics.br/","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":6.0},
-    {"priority":"P1","bucket":"China","claim":"PBOC or SAFE communications explicitly describe reducing U.S.-dollar reserve exposure as a policy objective.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.safe.gov.cn/en/","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":6.0},
-    {"priority":"P1","bucket":"Central-bank gold","claim":"Official central-bank communications report material additions to monetary gold reserves.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.gold.org/goldhub/data/gold-reserves-by-country","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":5.0},
-    {"priority":"P1","bucket":"Stablecoins","claim":"Treasury publicly frames payment-stablecoin policy as strengthening the U.S. dollar's international or reserve-currency role.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"structural_dollar_support","effect_direction":1,"effect_weight":6.0},
-    {"priority":"P1","bucket":"Treasury / Bessent","claim":"Treasury announces changes to nominal long-end buyback capacity or debt-management liquidity support.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"fiscal_treasury","effect_direction":0,"effect_weight":4.0},
+    {"priority":"P0","bucket":"Treasury / Bessent","claim":"Treasury publicly advocates broad depreciation of the U.S. dollar as a policy objective.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":10.0,"action_class":"BROAD_USD_DEVALUATION"},
+    {"priority":"P0","bucket":"Treasury / Bessent","claim":"Treasury publicly supports a strong or broadly stable U.S. dollar rather than deliberate broad depreciation.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"managed_devaluation","effect_direction":-1,"effect_weight":8.0,"action_class":"BROAD_USD_SUPPORT"},
+    {"priority":"P0","bucket":"Administration / White House","claim":"The White House publicly advocates deliberate broad U.S.-dollar depreciation or explicitly uses interest-rate policy to weaken the dollar.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.whitehouse.gov/remarks/","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":10.0,"action_class":"BROAD_USD_DEVALUATION"},
+    {"priority":"P0","bucket":"Bilateral FX policy","claim":"U.S. or Japanese officials publicly signal policy support for changing or stabilizing the dollar-yen exchange rate.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"fx_positioning_squeeze","effect_direction":1,"effect_weight":7.0,"action_class":"BILATERAL_FX_POLICY"},
+    {"priority":"P0","bucket":"Funding stress","claim":"Federal Reserve or New York Fed communications report material U.S.-dollar funding-market stress or exceptional dollar-liquidity support.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.newyorkfed.org/markets","effect_target":"dollar_funding_squeeze","effect_direction":1,"effect_weight":8.0,"action_class":"USD_FUNDING_STRESS"},
+    {"priority":"P0","bucket":"Fed / Warsh","claim":"Official communications document political pressure on Federal Reserve independence for currency or interest-rate objectives.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.federalreserve.gov/newsevents/speeches.htm","effect_target":"managed_devaluation","effect_direction":1,"effect_weight":6.0,"action_class":"FED_INDEPENDENCE_RISK"},
+    {"priority":"P1","bucket":"BRICS / de-dollarization","claim":"Official BRICS communications report concrete implementation of non-dollar settlement or payment infrastructure.","source":"SYSTEMATIC POLICY PROBE","link":"https://brics.br/","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":6.0,"action_class":"RESERVE_CONFIDENCE_STRESS"},
+    {"priority":"P1","bucket":"China","claim":"PBOC or SAFE communications explicitly describe reducing U.S.-dollar reserve exposure as a policy objective.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.safe.gov.cn/en/","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":6.0,"action_class":"RESERVE_CONFIDENCE_STRESS"},
+    {"priority":"P1","bucket":"Central-bank gold","claim":"Official central-bank communications report material additions to monetary gold reserves.","source":"SYSTEMATIC POLICY PROBE","link":"https://www.gold.org/goldhub/data/gold-reserves-by-country","effect_target":"reserve_confidence","effect_direction":1,"effect_weight":5.0,"action_class":"RESERVE_CONFIDENCE_STRESS"},
+    {"priority":"P1","bucket":"Stablecoins","claim":"Treasury publicly frames payment-stablecoin policy as strengthening the U.S. dollar's international or reserve-currency role.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"structural_dollar_support","effect_direction":1,"effect_weight":6.0,"action_class":"STRUCTURAL_DOLLAR_SUPPORT"},
+    {"priority":"P1","bucket":"Treasury / Bessent","claim":"Treasury announces changes to nominal long-end buyback capacity or debt-management liquidity support.","source":"SYSTEMATIC POLICY PROBE","link":"https://home.treasury.gov/news/press-releases","effect_target":"fiscal_treasury","effect_direction":0,"effect_weight":4.0,"action_class":"FISCAL_DEBT_MANAGEMENT"},
 ]
 def systematic_policy_leads(max_rows:int=8)->list[dict]:
     """Return bounded standing research probes so the verification queue cannot go dark when news RSS fails.
@@ -235,6 +246,29 @@ def systematic_policy_leads(max_rows:int=8)->list[dict]:
         })
     return out
 
+
+
+def canonical_source_candidates(bucket:str,claim:str='')->list[dict]:
+    """Return exact high-value official pages before generic index crawling.
+
+    This prevents canonical 2026 FX/stablecoin evidence from losing to privacy/help/navigation pages.
+    The pages are candidates only; nuanced claims still pass relevance + LLM + human approval.
+    """
+    text=(claim or '').lower(); out=[]
+    def add(name,url):
+        out.append({'name':name,'url':url,'bucket':bucket,'claim':claim,'status':'CANONICAL_PRIMARY_CANDIDATE','route_bonus':55.0,'route_reason':'canonical-topic-route','anchor_score':100.0,'discovery':'canonical-topic-map'})
+    if bucket in {'Treasury / Bessent','FX intervention','Bilateral FX policy'} and any(k in text for k in ['yen','japan','ueda','undervaluation','exchange-rate volatility','exchange rate volatility','orderly yen']):
+        add('Treasury Bessent-Ueda readout',TREASURY_BESSENT_UEDA)
+        add('Japan-US finance ministerial readout',MOF_US_JAPAN_20260831)
+    if bucket=='FX intervention' and any(k in text for k in ['interven','u.s.','us ','federal reserve','treasury']):
+        add('NY Fed Q2 2026 FX operations',NYFED_Q2_2026_FX)
+        add('NY Fed Q1 2026 FX operations',NYFED_Q1_2026_FX)
+    if bucket=='FX intervention' and any(k in text for k in ['japan','mof','yen','interven']):
+        add('Japan MOF monthly intervention index',MOF_FX_MONTHLY_INDEX)
+    if bucket=='Stablecoins' and any(k in text for k in ['stablecoin','genius','reserve-currency','reserve currency','dollar']):
+        add('Treasury GENIUS Act rulemaking',TREASURY_GENIUS_20260817)
+    return out
+
 def primary_source_candidates(bucket:str,claim:str='')->list[dict]:
     out=[]
     for name,url in PRIMARY_ADAPTERS.get(bucket,[]):
@@ -245,7 +279,7 @@ def primary_source_candidates(bucket:str,claim:str='')->list[dict]:
 
 
 VERIFICATION_PRIORITY={
-    'FX intervention':'P0','Treasury / Bessent':'P0','Fed / Warsh':'P0','Funding stress':'P0','Administration / White House':'P0',
+    'FX intervention':'P0','Bilateral FX policy':'P0','Treasury / Bessent':'P0','Fed / Warsh':'P0','Funding stress':'P0','Administration / White House':'P0',
     'BRICS / de-dollarization':'P1','China':'P1','Central-bank gold':'P1','Stablecoins':'P1',
 }
 
@@ -327,7 +361,7 @@ def discover_primary_evidence(bucket:str,claim:str,timeout:int=10,max_candidates
     This is deterministic discovery, not factual verification. It starts from known official index pages,
     ranks same-domain links by lexical overlap, then fetches the strongest pages for a content-overlap score.
     """
-    roots=primary_source_candidates(bucket,claim)
+    roots=canonical_source_candidates(bucket,claim) + primary_source_candidates(bucket,claim)
     claim_tokens=_tokens(claim)
     candidates=[]
     seen=set()

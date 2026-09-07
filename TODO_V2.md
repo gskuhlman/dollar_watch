@@ -1,3 +1,29 @@
+# dollar_watch roadmap
+
+## V3.2 — Official-source resilience / intervention history completed
+- [x] Normalize Japanese full-width digits/punctuation and parse `兆` / `億` MOF intervention amounts robustly.
+- [x] Add retry/backoff, Treasury Readouts index resolution, and auditable last-known-official cache fallback for transient 503/403 failures.
+- [x] Track U.S. FX intervention by quarter, actor, currency, direction/purpose, and broad-dollar implication.
+- [x] Preserve Q4 2025 Treasury/ESF Argentina intervention as targeted stabilization rather than broad-dollar evidence.
+- [x] Add lagged NY Fed Q2 2026 official FX-swap/basis validation without inflating live offshore-funding coverage.
+- [x] Add V3.2 UI/audit fields and regressions.
+
+## Feature freeze after V3.2
+No new regime or broad indicator family. Next work is calibration, false-positive measurement, forecast/decision performance, and source maintenance.
+
+
+## V3.1 — Canonical policy / FX evidence hotfix completed
+- [x] Direct Japan MOF monthly FX-intervention ingestion.
+- [x] Deterministic NY Fed U.S. FX-intervention finding ingestion.
+- [x] Canonical exact-source routing for Bessent/Ueda, Japan-U.S. finance-ministerial, GENIUS Act, and NY Fed FX reports.
+- [x] Separate bilateral FX policy from direct intervention and broad-dollar intent.
+- [x] Add policy-evidence action taxonomy and target-specific score effects.
+- [x] Seed canonical sources into the persistent verification queue without repeatedly resetting checked rows.
+- [x] Add V3.1 regressions.
+
+## Feature freeze after V3.1
+Focus next on calibration, forecast/decision performance, source reliability, and live event behavior. Do not add a new regime without evidence that the current taxonomy cannot represent the failure mode.
+
 # dollar_watch — Prioritized Product Backlog
 
 The backlog is ranked by **decision value**, not by ease of implementation. A feature is high priority if it can warn earlier, disprove the thesis, identify the transmission mechanism, or materially change what the portfolio should do.

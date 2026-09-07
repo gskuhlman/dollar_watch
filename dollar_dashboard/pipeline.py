@@ -20,6 +20,7 @@ from .fiscal import fetch_fiscal_pipeline
 from .news import fetch_news
 from .buybacks import fetch_buyback_schedule, summarize_buybacks
 from .fed_policy import classify_fed_treasury_change
+from .official_policy import collect_official_policy_bundle
 
 
 
@@ -197,6 +198,25 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["news"] = pd.DataFrame()
         status["News discovery"] = {"ok": False, "weight": 0.5, "error": str(e)}
 
+    try:
+        official_policy = collect_official_policy_bundle(timeout=12)
+        bundle["official_policy"] = official_policy
+        jp=official_policy.get("japan_fx_intervention",{}) or {}
+        usfx=official_policy.get("us_fx_intervention",{}) or {}
+        basis=official_policy.get("nyfed_basis_validation",{}) or {}
+        stmt_ok=sum(1 for x in official_policy.get("canonical_statements",[]) if x.get("reachable"))
+        stmt_live=sum(1 for x in official_policy.get("canonical_statements",[]) if x.get("live_reachable"))
+        live_policy = bool(jp.get("live_reachable") or stmt_live or basis.get("live_reachable"))
+        status["Official FX / policy feeds"] = {
+            "ok": bool(jp.get("ok") or usfx.get("ok") or stmt_ok or basis.get("ok")), "weight": 0.8,
+            "last_date": pd.Timestamp.now(tz="UTC"),
+            "confidence_cap": 100.0 if live_policy else 85.0,
+            "notes": f"Deterministic official feeds: Japan MOF intervention={bool(jp.get('ok'))}; NY Fed US FX={bool(usfx.get('ok'))}; canonical sources available={stmt_ok}/4 (live={stmt_live}); lagged NY Fed basis validation={bool(basis.get('ok'))}; cached fallbacks are auditable and capped when no live official source is reachable",
+        }
+    except Exception as e:
+        bundle["official_policy"] = {"japan_fx_intervention":{"ok":False},"us_fx_intervention":{"ok":False},"canonical_statements":[]}
+        status["Official FX / policy feeds"] = {"ok":False,"weight":0.8,"error":str(e),"notes":"Missing official-policy data is uncertainty, not benign evidence"}
+
     health_df, confidence = build_data_health(status)
     bundle["health"] = health_df
     bundle["data_confidence"] = confidence
@@ -218,15 +238,21 @@ def collect_live_bundle() -> dict[str, Any]:
         "buyback": (0.55*source_confidence.get("Treasury buyback schedule", 0.0) + 0.45*source_confidence.get("Treasury buyback results", 0.0))
                    if (bundle.get("buyback_meta",{}).get("intensity_status") == "KNOWN") else 0.0,
         "news": source_confidence.get("News discovery", 0.0),
+        "official_policy": source_confidence.get("Official FX / policy feeds", 0.0),
     }
 
     # V2.9: a free front-futures/spot anomaly proxy adds modest visibility, but it is
     # explicitly NOT cross-currency basis.  True institutional basis remains a gap.
     offshore_proxy=bundle.get("offshore_fx_proxy",{}) or {}
+    lagged_basis=(bundle.get("official_policy",{}) or {}).get("nyfed_basis_validation",{}) or {}
     offshore_funding_meta = {
         **offshore_proxy,
+        # Do not inflate live coverage with a quarterly report.  The NY Fed report is a lagged
+        # validation layer for the proxy, not a live institutional basis feed.
         "coverage": float(offshore_proxy.get("coverage",30.0) or 30.0),
         "desired_metrics": ["EURUSD cross-currency basis","JPYUSD cross-currency basis","CHFUSD cross-currency basis","OTC FX-swap dollar premium"],
+        "nyfed_lagged_basis_validation": lagged_basis,
+        "lagged_official_validation_available": bool(lagged_basis.get("ok")),
     }
 
 
@@ -256,6 +282,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "treasury_buybacks": _records(bundle.get("buybacks", pd.DataFrame())),
         "fed_treasury_classification": bundle.get("fed_treasury_classification", {}),
         "offshore_usd_funding_meta": offshore_funding_meta,
+        "official_policy_meta": bundle.get("official_policy", {}),
         "data_confidence": float(confidence),
         "source_confidence": source_confidence,
         "component_confidence": component_confidence,

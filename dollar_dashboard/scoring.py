@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 from .evidence import effective_evidence_value
@@ -87,19 +88,38 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     ov, override_audit = _verified_overrides(overrides)
 
     approved_policy_evidence = snapshot.get("approved_verification_evidence", []) or []
-    policy_evidence_net = 0.0
-    policy_evidence_rows = []
+    evidence_target_net = {}
+    approved_evidence_rows = []
     for ev in approved_policy_evidence:
-        if str(ev.get("effect_target") or "") != "managed_devaluation":
-            continue
+        target=str(ev.get("effect_target") or "")
         try:
             direction=float(ev.get("effect_direction") or 0); weight=float(ev.get("effect_weight") or 0)
         except Exception:
             continue
         contribution=max(-12.0,min(12.0,direction*weight))
-        policy_evidence_net += contribution
-        policy_evidence_rows.append({**ev,"score_contribution":round(contribution,1)})
-    policy_evidence_net=max(-20.0,min(25.0,policy_evidence_net))
+        evidence_target_net[target]=evidence_target_net.get(target,0.0)+contribution
+        approved_evidence_rows.append({**ev,"score_contribution":round(contribution,1)})
+    policy_evidence_net=max(-20.0,min(25.0,evidence_target_net.get("managed_devaluation",0.0)))
+    fx_policy_evidence_net=max(-10.0,min(15.0,evidence_target_net.get("fx_positioning_squeeze",0.0)))
+    structural_policy_support=max(-10.0,min(15.0,evidence_target_net.get("structural_dollar_support",0.0)))
+    reserve_policy_net=max(-10.0,min(15.0,evidence_target_net.get("reserve_confidence",0.0)))
+    funding_policy_net=max(-10.0,min(15.0,evidence_target_net.get("dollar_funding_squeeze",0.0)))
+    fiscal_policy_net=max(-8.0,min(10.0,evidence_target_net.get("fiscal_treasury",0.0)))
+    policy_evidence_rows=[x for x in approved_evidence_rows if str(x.get("effect_target") or "")=="managed_devaluation"]
+
+    official_policy=snapshot.get("official_policy_meta",{}) or {}
+    jp_fx=official_policy.get("japan_fx_intervention",{}) or {}
+    us_fx=official_policy.get("us_fx_intervention",{}) or {}
+    japan_fx_catalyst=0.0
+    if jp_fx.get("ok") and jp_fx.get("intervention_occurred"):
+        age_days=999.0
+        try:
+            end=datetime.fromisoformat(str(jp_fx.get("period_end"))).replace(tzinfo=timezone.utc)
+            age_days=(datetime.now(timezone.utc)-end).total_seconds()/86400.0
+        except Exception:
+            pass
+        japan_fx_catalyst=10.0 if age_days<=45 else (6.0 if age_days<=90 else (3.0 if age_days<=180 else 0.0))
+    us_direct_fx_counterevidence=-3.0 if us_fx.get("ok") and us_fx.get("finding")=="NO_US_FX_INTERVENTION" else 0.0
 
     market_conf = _conf(snapshot, "market")
     fred_conf = _conf(snapshot, "fred")
@@ -190,6 +210,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     policy_intent += 0.18 * ov.get("capital_control_or_holder_fee_risk", 0)
     policy_intent += policy_news
     policy_intent += policy_evidence_net
+    policy_intent += us_direct_fx_counterevidence
     policy_intent = _clamp(policy_intent)
 
     external = 0.36 * tic_pressure + 0.22 * cofer_pressure
@@ -208,6 +229,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     external += 0.13 * ov.get("central_bank_gold_rotation", 0)
     external += 0.16 * ov.get("commodity_dedollarization", 0)
     external += external_news
+    external += reserve_policy_net
     # FRED weekly custody is fresher than TIC and is confidence-weighted independently.
     if foreign_custody_yoy < -100000:
         external += 8 * fred_conf
@@ -217,7 +239,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         external += 7 * fred_conf
     external = _clamp(external)
 
-    support = 0.70 * stablecoin_auto + 0.25 * ov.get("stablecoin_dollar_support", 0) + support_news
+    support = 0.70 * stablecoin_auto + 0.25 * ov.get("stablecoin_dollar_support", 0) + support_news + structural_policy_support
     support = _clamp(support)
 
     fiscal_supply = 10.0
@@ -235,6 +257,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         fiscal_supply += 0.05 * _eff(buyback_intensity, buyback_conf)
     fiscal_supply += 0.10 * ov.get("treasury_auction_stress", 0)
     fiscal_supply += 0.10 * ov.get("institutional_credibility_stress", 0)
+    fiscal_supply += fiscal_policy_net
     fiscal_supply = _clamp(fiscal_supply)
 
     inflation = 7.0
@@ -271,6 +294,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     plumbing += 0.15 * auction_auto
     plumbing += 0.12 * ov.get("geopolitical_cyber_stress", 0)
     plumbing += funding_news
+    plumbing += funding_policy_net
     plumbing = _clamp(plumbing)
 
     institutional = _clamp(
@@ -334,12 +358,16 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     if tic_pressure >= 30: drivers["reserve_confidence"].append(f"Confidence-adjusted TIC pressure {tic_pressure:.0f}/100")
     if cofer_pressure >= 30: drivers["reserve_confidence"].append(f"COFER reserve-share pressure {cofer_pressure:.0f}/100")
 
-    fx_squeeze = 5 + 0.70 * fx_squeeze_auto
+    fx_squeeze = 5 + 0.70 * fx_squeeze_auto + japan_fx_catalyst + fx_policy_evidence_net
     # Confirmation of a short-covering squeeze = crowded shorts plus foreign FX strengthening.
     if jpy_3m < -0.03: fx_squeeze += 8 * market_conf
     if eur_3m > 0.03: fx_squeeze += 5 * market_conf
     if chf_3m < -0.03: fx_squeeze += 5 * market_conf
     fx_squeeze = _clamp(fx_squeeze)
+    if japan_fx_catalyst>0:
+        drivers["fx_positioning_squeeze"].append(f"Japan MOF reports recent direct FX intervention; structured catalyst +{japan_fx_catalyst:.0f}")
+    if fx_policy_evidence_net>0:
+        drivers["fx_positioning_squeeze"].append(f"Approved bilateral FX-policy evidence adds {fx_policy_evidence_net:+.0f} points")
     if fx_squeeze_auto >= 55:
         drivers["fx_positioning_squeeze"].extend(snapshot.get("fx_positioning_squeeze_reasons", [])[:4])
     if fx_squeeze_auto >= 55 and (jpy_3m < -0.03 or chf_3m < -0.03 or eur_3m > 0.03):
@@ -396,8 +424,9 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
 
     policy_manual_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
     approved_policy_buckets={str(e.get("bucket") or "") for e in policy_evidence_rows}
-    policy_queue_critical=min(100.0,35.0*len(approved_policy_buckets)) if policy_evidence_rows else 0.0
-    policy_critical=max(policy_manual_critical,policy_queue_critical)
+    policy_queue_critical=min(75.0,35.0*len(approved_policy_buckets)) if policy_evidence_rows else 0.0
+    structured_direct_coverage=25.0 if us_fx.get("ok") else 0.0
+    policy_critical=max(policy_manual_critical,min(100.0,policy_queue_critical+structured_direct_coverage),structured_direct_coverage)
     reserve_policy_critical=_verified(["foreign_official_selling","brics_payment_progress","central_bank_gold_rotation","commodity_dedollarization"])
     generic_coverage = {
         "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_schedule_conf*100 + 0.20*news_conf*100),
@@ -436,6 +465,12 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "components": {
             "Policy intent / intervention": round(policy_intent, 1),
             "Approved policy evidence net effect": round(policy_evidence_net,1),
+            "Japan MOF intervention catalyst": round(japan_fx_catalyst,1),
+            "Approved bilateral FX-policy catalyst": round(fx_policy_evidence_net,1),
+            "Approved reserve-policy evidence": round(reserve_policy_net,1),
+            "Approved funding-policy evidence": round(funding_policy_net,1),
+            "Approved fiscal-policy evidence": round(fiscal_policy_net,1),
+            "US direct-FX intervention counterevidence": round(us_direct_fx_counterevidence,1),
             "Fundamental USD-downside positioning": round(cftc_pressure, 1),
             "FX positioning squeeze risk": round(fx_squeeze_auto, 1),
             "External de-dollarization pressure": round(external, 1),
@@ -448,7 +483,18 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         },
         "confidence_adjustments": confidence_audit,
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
-        "approved_policy_evidence": policy_evidence_rows,
+        "approved_policy_evidence": approved_evidence_rows,
+        "policy_action_taxonomy": {
+            "BROAD_USD_DEVALUATION":"Increase non-USD/devaluation hedge overlay; do not automatically add T-bills.",
+            "BROAD_USD_SUPPORT":"Reduce managed-devaluation overlay if corroborated by markets.",
+            "BILATERAL_FX_POLICY":"Raise FX-squeeze catalyst confidence; do not automatically trade.",
+            "BILATERAL_FX_INTERVENTION":"Raise FX-squeeze catalyst confidence; direction is pair-specific, not a generic T-bill signal.",
+            "USD_FUNDING_STRESS":"Increase T-bills/liquidity; trim BTC and unhedged ex-US risk.",
+            "RESERVE_CONFIDENCE_STRESS":"Favor gold/CHF and avoid adding long nominal duration.",
+            "FISCAL_DEBT_MANAGEMENT":"Interpret as debt-management/liquidity evidence; portfolio action depends on auctions/real yields/inflation.",
+            "STRUCTURAL_DOLLAR_SUPPORT":"Treat as structural dollar support, not a devaluation hedge signal.",
+        },
+        "official_policy_meta": official_policy,
         "repo_tail_signal": {
             "status": "CONFIRM" if repo_tail_confirm else ("WATCH" if repo_tail_watch else "NORMAL"),
             "sofr99_iorb": sofr99_iorb, "percentile_1y": sofr99_pct, "zscore_1y": sofr99_z,

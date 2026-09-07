@@ -316,6 +316,8 @@ def _ensure_verification_queue(con) -> None:
     if "effect_target" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_target TEXT")
     if "effect_direction" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_direction REAL DEFAULT 0")
     if "effect_weight" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN effect_weight REAL DEFAULT 0")
+    if "action_class" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN action_class TEXT")
+    if "structured_fact" not in cols: con.execute("ALTER TABLE verification_queue ADD COLUMN structured_fact INTEGER DEFAULT 0")
 
 def _sync_verification_quarantine(con) -> int:
     """Quarantine legacy checks whose queue candidate now fails V2.9 relevance rules.
@@ -350,15 +352,21 @@ def upsert_verification_queue(rows: list[dict]) -> int:
         claim=str(r.get('claim') or '').strip(); bucket=str(r.get('bucket') or '').strip(); url=str(r.get('link') or '').strip()
         if len(claim)<10 or not bucket: continue
         key=hashlib.sha256((bucket+'|'+claim).encode('utf-8')).hexdigest()
-        con.execute("""INSERT INTO verification_queue(claim_key,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,effect_target,effect_direction,effect_weight)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_key) DO UPDATE SET updated_at=excluded.updated_at,priority=excluded.priority,headline_source=excluded.headline_source,headline_url=excluded.headline_url,preferred_source=excluded.preferred_source,effect_target=excluded.effect_target,effect_direction=excluded.effect_direction,effect_weight=excluded.effect_weight""",
-        (key,now,now,r.get('priority'),bucket,claim,r.get('source'),url,r.get('preferred_verification_source'),'QUEUED',r.get('effect_target',''),float(r.get('effect_direction') or 0),float(r.get('effect_weight') or 0))); n+=1
+        status=str(r.get('status') or 'QUEUED')
+        candidate_url=str(r.get('candidate_url') or '')
+        candidate_tier=str(r.get('candidate_tier') or '')
+        candidate_relevance=r.get('candidate_relevance')
+        relevance_status=str(r.get('relevance_status') or '')
+        structured=1 if r.get('structured_fact') else 0
+        con.execute("""INSERT INTO verification_queue(claim_key,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,effect_target,effect_direction,effect_weight,action_class,structured_fact)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_key) DO UPDATE SET updated_at=excluded.updated_at,priority=excluded.priority,headline_source=excluded.headline_source,headline_url=excluded.headline_url,preferred_source=excluded.preferred_source,effect_target=excluded.effect_target,effect_direction=excluded.effect_direction,effect_weight=excluded.effect_weight,action_class=excluded.action_class,structured_fact=excluded.structured_fact,candidate_url=CASE WHEN excluded.candidate_url<>'' THEN excluded.candidate_url ELSE verification_queue.candidate_url END,candidate_tier=CASE WHEN excluded.candidate_tier<>'' THEN excluded.candidate_tier ELSE verification_queue.candidate_tier END,candidate_relevance=COALESCE(excluded.candidate_relevance,verification_queue.candidate_relevance),relevance_status=CASE WHEN excluded.relevance_status<>'' THEN excluded.relevance_status ELSE verification_queue.relevance_status END,status=CASE WHEN excluded.status='STRUCTURED_VERIFIED' THEN excluded.status WHEN excluded.status='SOURCE_FOUND' AND verification_queue.status IN ('QUEUED','NO_CANDIDATE','ERROR','IRRELEVANT_SOURCE') THEN excluded.status ELSE verification_queue.status END""",
+        (key,now,now,r.get('priority'),bucket,claim,r.get('source'),url,r.get('preferred_verification_source'),status,candidate_url,candidate_tier,candidate_relevance,relevance_status,r.get('effect_target',''),float(r.get('effect_direction') or 0),float(r.get('effect_weight') or 0),r.get('action_class',''),structured)); n+=1
     con.commit(); con.close(); return n
 
 def recent_verification_queue(limit:int=100) -> list[dict]:
     con=connect(); _ensure_verification_queue(con)
-    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,llm_explanation,approved_status,effect_target,effect_direction,effect_weight FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
-    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','candidate_relevance','relevance_status','llm_verdict','llm_explanation','approved_status','effect_target','effect_direction','effect_weight']
+    rows=con.execute("SELECT id,created_at,updated_at,priority,bucket,claim,headline_source,headline_url,preferred_source,status,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,llm_explanation,approved_status,effect_target,effect_direction,effect_weight,action_class,structured_fact FROM verification_queue ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",(limit,)).fetchall(); con.close()
+    keys=['id','created_at','updated_at','priority','bucket','claim','headline_source','headline_url','preferred_source','status','candidate_url','candidate_tier','candidate_relevance','relevance_status','llm_verdict','llm_explanation','approved_status','effect_target','effect_direction','effect_weight','action_class','structured_fact']
     return [dict(zip(keys,r)) for r in rows]
 
 def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED',candidate_relevance:float|None=None,relevance_status:str='') -> None:
@@ -383,8 +391,8 @@ def approved_verification_evidence(limit:int=100) -> list[dict]:
     do not invert a claim automatically.
     """
     con=connect(); _ensure_verification_queue(con)
-    rows=con.execute("""SELECT id,updated_at,priority,bucket,claim,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,approved_status,effect_target,effect_direction,effect_weight
+    rows=con.execute("""SELECT id,updated_at,priority,bucket,claim,candidate_url,candidate_tier,candidate_relevance,relevance_status,llm_verdict,approved_status,effect_target,effect_direction,effect_weight,action_class
       FROM verification_queue WHERE approved_status='APPROVED' AND relevance_status='RELEVANT' AND upper(COALESCE(llm_verdict,''))='SUPPORTED'
       ORDER BY updated_at DESC LIMIT ?""",(limit,)).fetchall(); con.close()
-    keys=['id','updated_at','priority','bucket','claim','source_url','source_tier','relevance_score','relevance_status','verdict','approved_status','effect_target','effect_direction','effect_weight']
+    keys=['id','updated_at','priority','bucket','claim','source_url','source_tier','relevance_score','relevance_status','verdict','approved_status','effect_target','effect_direction','effect_weight','action_class']
     return [dict(zip(keys,r)) for r in rows]

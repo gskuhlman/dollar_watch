@@ -1,4 +1,4 @@
-"""Headless V3.0 collector for cron / Windows Task Scheduler.
+"""Headless V3.2 collector for cron / Windows Task Scheduler.
 
 Fetches all public feeds, scores the six risk regimes, calculates the guarded portfolio,
 saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
@@ -16,6 +16,7 @@ from dollar_dashboard.storage import get_overrides, get_setting, recent_snapshot
 from dollar_dashboard.alerts import generate_alerts, send_webhook
 from dollar_dashboard.triggers import evaluate_triggers
 from dollar_dashboard.verification import systematic_policy_leads, verification_rows_from_news
+from dollar_dashboard.official_policy import canonical_verification_leads
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -28,10 +29,10 @@ def main():
     snap = bundle["snapshot"]
     news_df = bundle.get("news")
     news_class = classify_news(news_df)
-    # V3.0: populate the research funnel even in headless scheduled runs. Standing probes
+    # V3.2: populate the research funnel even in headless scheduled runs. Standing probes
     # prevent a dark queue when RSS/news discovery is empty; headline rows are normalized
     # to primary-source verification families before persistence.
-    queue_rows = verification_rows_from_news(news_df, max_rows=30) + systematic_policy_leads(max_rows=10)
+    queue_rows = verification_rows_from_news(news_df, max_rows=30) + systematic_policy_leads(max_rows=10) + canonical_verification_leads(bundle.get("official_policy",{}))
     if queue_rows:
         upsert_verification_queue(queue_rows)
     overrides = get_overrides(DEFAULT_OVERRIDES)
@@ -62,7 +63,7 @@ def main():
     }
     rid = save_snapshot(payload, run_kind="SCHEDULED_COLLECTOR")
     save_alerts(alerts)
-    print(f"Saved V3.0 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Saved V3.2 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
         old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)

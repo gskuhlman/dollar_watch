@@ -1,7 +1,21 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.0
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.2
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
+
+
+
+## V3.2 official-source resilience / intervention-history freeze release
+
+V3.2 keeps the six-regime model frozen and hardens the last deterministic policy-data paths. Japan MOF intervention amounts now parse Japanese large-number notation after Unicode normalization; canonical Treasury pages use retry/index-resolution plus a transparent dated last-known-official cache; U.S. FX intervention is represented as a quarter-level actor/currency/purpose timeline rather than a single boolean; and the latest NY Fed quarterly FX report supplies a lagged official validation layer for offshore FX-swap funding conditions without increasing live cross-currency-basis coverage or firing a live funding trigger.
+
+See `CHANGELOG_V3_2.md` and `test_v32.py`.
+
+## V3.1 canonical policy / FX evidence hotfix
+
+V3.1 keeps the six-regime model frozen and replaces the last weak generic-policy-search path with deterministic official-source ingestion. Japan MOF intervention amounts and NY Fed U.S. FX-operation findings are collected directly; canonical Treasury/Japan/NY-Fed policy pages are seeded into the verification queue before generic crawling. Bilateral yen policy, direct FX intervention, broad-dollar policy, dollar-funding stress, reserve-confidence stress, fiscal debt management, and structural dollar support now have separate action classes so they cannot share an inappropriate one-size-fits-all portfolio response.
+
+See `CHANGELOG_V3_1.md` for implementation details and `test_v31.py` for the new correctness regressions.
 
 ## V3.0 correctness / feature-freeze release
 
