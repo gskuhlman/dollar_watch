@@ -1,6 +1,6 @@
 import pandas as pd
 
-from dollar_dashboard.treasury_financing import summarize_treasury_financing, classify_financing_regime, SLR_POLICY
+from dollar_dashboard.treasury_financing import summarize_treasury_financing, classify_financing_regime, SLR_POLICY, Z1_FINANCING_SERIES
 
 
 def _q(vals):
@@ -22,9 +22,9 @@ def test_q1_style_absorption_and_negative_mmf_preserved():
         'Households & nonprofits':_q([60932,241872]),
     })
     m=pd.DataFrame({
-        'M2 money stock':pd.Series([22757,23218],index=pd.to_datetime(['2026-04-01','2026-07-01'])),
-        'Commercial bank deposits':pd.Series([19083,19409],index=pd.to_datetime(['2026-04-01','2026-07-01'])),
-        'Bank Treasury + agency securities':pd.Series([4736,4819],index=pd.to_datetime(['2026-04-01','2026-07-01'])),
+        'M2 money stock':pd.Series([22000,22640,22757,23218],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
+        'Commercial bank deposits':pd.Series([18500,18952,19083,19409],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
+        'Bank Treasury + agency securities':pd.Series([4650,4720,4736,4819],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
     })
     out=summarize_treasury_financing(z,m)
     assert out['available']
@@ -32,6 +32,9 @@ def test_q1_style_absorption_and_negative_mmf_preserved():
     assert 47 < out['monetary_capable_absorption_pct'] < 48
     assert out['mmf_absorption_pct'] < 0
     assert out['classification']['state'] in {'ORANGE','RED'}
+    assert out['money_confirmation']['matched_confirmation_3m_annualized_pct'] is not None
+    assert out['classification']['provisional'] is True
+    assert out['slr_transmission_test']['status']=='FULL_EFFECT_NOT_YET_TESTABLE'
     mmf=next(x for x in out['holders'] if x['holder']=='Money market funds')
     assert mmf['share_of_issuance_pct'] < 0
 
@@ -95,6 +98,33 @@ def test_slr_is_relaxed_not_exempt():
     assert SLR_POLICY['reserve_exemption'] is False
 
 
+def test_current_money_cannot_upgrade_old_quarter():
+    idx=pd.to_datetime(['2026-01-01'])
+    z=pd.DataFrame({
+        'Net marketable Treasury issuance':pd.Series([1000],index=idx),
+        'Federal Reserve / central bank':pd.Series([250],index=idx),
+        'U.S.-chartered depository institutions':pd.Series([150],index=idx),
+        'Foreign banking offices in U.S.':pd.Series([20],index=idx),
+        'Banks in U.S.-affiliated areas':pd.Series([5],index=idx),
+        'Credit unions':pd.Series([25],index=idx),
+    })
+    # Q1 matched money is flat; later money jumps. Classification must not use the later jump.
+    m=pd.DataFrame({
+        'M2 money stock':pd.Series([100,100,100,120],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
+        'Commercial bank deposits':pd.Series([100,100,100,120],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
+    })
+    out=summarize_treasury_financing(z,m)
+    assert out['monetary_capable_absorption_pct']==45.0
+    assert abs(out['money_confirmation']['matched_confirmation_3m_annualized_pct']) < 1e-9
+    assert out['money_confirmation']['confirmation_3m_annualized_pct'] > 5
+    assert out['classification']['state']=='YELLOW'
+
+
+def test_nonfinancial_fred_ids_are_live_f32_aliases():
+    assert Z1_FINANCING_SERIES['Nonfinancial corporate business']=='NCBTSAQ027S'
+    assert Z1_FINANCING_SERIES['Nonfinancial noncorporate business']=='NNBGSAQ027S'
+
+
 if __name__=='__main__':
     test_q1_style_absorption_and_negative_mmf_preserved()
     test_no_money_confirmation_prevents_orange_even_if_absorption_high()
@@ -102,4 +132,6 @@ if __name__=='__main__':
     test_latest_headline_requires_common_core_quarter()
     test_repo_funding_layer_is_separate_from_holder_math()
     test_slr_is_relaxed_not_exempt()
-    print('v3.4 tests passed')
+    test_current_money_cannot_upgrade_old_quarter()
+    test_nonfinancial_fred_ids_are_live_f32_aliases()
+    print('v3.4.1 tests passed')

@@ -15,9 +15,9 @@ from urllib.parse import urljoin
 import requests
 
 UA_VARIANTS=[
-    {"User-Agent":"dollar_watch/3.4 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
+    {"User-Agent":"dollar_watch/3.4.1 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
     {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36","Accept-Language":"en-US,en;q=0.9"},
-    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
+    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4.1; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
 ]
 UA=UA_VARIANTS[0]
 

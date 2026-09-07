@@ -36,8 +36,8 @@ Z1_FINANCING_SERIES = {
     "Security brokers & dealers": "BOGZ1FA663061105Q",
     "Money market funds": "BOGZ1FA633061105Q",
     "Households & nonprofits": "HNOTSBQ027S",
-    "Nonfinancial corporate business": "BOGZ1FA103061103Q",
-    "Nonfinancial noncorporate business": "BOGZ1FA113061003Q",
+    "Nonfinancial corporate business": "NCBTSAQ027S",
+    "Nonfinancial noncorporate business": "NNBGSAQ027S",
     "State & local governments": "BOGZ1FA213061103Q",
     "Property-casualty insurance": "BOGZ1FA513061105Q",
     "Life insurance": "BOGZ1FA543061105Q",
@@ -125,6 +125,38 @@ def _annualized_growth(series: pd.Series, days: int = 91) -> float | None:
         return None
 
 
+def _annualized_growth_asof(series: pd.Series, asof=None, days: int = 91) -> float | None:
+    """Approximate calendar-window annualized growth ending on/before *asof*.
+
+    Monthly FRED series are usually timestamped on the first of the month.  The
+    prior observation nearest the calendar target is therefore preferable to
+    forcing a strictly-before target that can accidentally turn a 3-month
+    comparison into four months.
+    """
+    s = pd.to_numeric(series, errors="coerce").dropna().sort_index()
+    if asof is not None:
+        s = s.loc[s.index <= pd.Timestamp(asof)]
+    if len(s) < 2 or s.iloc[-1] <= 0:
+        return None
+    latest_date = s.index[-1]
+    target = latest_date - pd.Timedelta(days=days)
+    candidates = s.iloc[:-1]
+    if candidates.empty:
+        return None
+    prior_date = min(candidates.index, key=lambda x: abs((pd.Timestamp(x) - target).days))
+    if abs((pd.Timestamp(prior_date) - target).days) > 45:
+        return None
+    prior_val = float(candidates.loc[prior_date])
+    if prior_val <= 0:
+        return None
+    elapsed = max(1.0, float((latest_date - prior_date).days))
+    ratio = float(s.iloc[-1] / prior_val)
+    try:
+        return (ratio ** (365.25 / elapsed) - 1.0) * 100.0
+    except Exception:
+        return None
+
+
 def _series_value(df: pd.DataFrame, label: str, when) -> float | None:
     if df is None or df.empty or label not in df.columns:
         return None
@@ -151,7 +183,7 @@ def classify_financing_regime(
     f = _safe_float(foreign_share)
     confirms = []
     if d is not None and d >= 15:
-        confirms.append("dealer warehousing >=15% of issuance")
+        confirms.append("dealer net Treasury absorption >=15% of issuance")
     if f is not None and f < 15:
         confirms.append("foreign absorption <15% of issuance")
 
@@ -171,13 +203,13 @@ def classify_financing_regime(
     if m >= 50 and g is not None and g >= 6 and confirms:
         state = "RED"
         reason = (
-            "Monetary-capable absorption exceeds 50%, money/deposit growth is >6% annualized, "
-            "and a market-structure confirmation is active."
+            "Monetary-capable absorption exceeds 50%, same-quarter money/deposit growth is >6% annualized, "
+            "and a market-structure confirmation is active. This is a pressure classification, not causal attribution."
         )
     elif m >= 35 and g is not None and g >= 5:
         state = "ORANGE"
         reason = (
-            "Monetary-capable absorption is >=35% and broad-money/deposit growth confirms a monetary backdrop."
+            "Monetary-capable absorption is >=35% and same-quarter broad-money/deposit growth shows a concurrent monetary backdrop; attribution remains unproven."
         )
     elif m >= 20:
         state = "YELLOW"
@@ -188,12 +220,18 @@ def classify_financing_regime(
     return {"state": state, "score": round(score, 1), "reason": reason, "confirmations": confirms}
 
 
-def _summarize_money(money_hist: pd.DataFrame | None) -> dict:
+def _summarize_money(money_hist: pd.DataFrame | None, matched_quarter=None) -> dict:
     out = {
         "m2_3m_annualized_pct": None,
         "deposits_3m_annualized_pct": None,
         "confirmation_3m_annualized_pct": None,
+        "matched_m2_3m_annualized_pct": None,
+        "matched_deposits_3m_annualized_pct": None,
+        "matched_confirmation_3m_annualized_pct": None,
+        "matched_as_of": None,
         "bank_treasury_agency_3m_change_bn": None,
+        "bank_treasury_agency_since_slr_bn": None,
+        "bank_treasury_agency_since_slr_pct": None,
         "as_of": None,
     }
     if money_hist is None or money_hist.empty:
@@ -201,26 +239,61 @@ def _summarize_money(money_hist: pd.DataFrame | None) -> dict:
     m2 = money_hist["M2 money stock"] if "M2 money stock" in money_hist else pd.Series(dtype=float)
     dep = money_hist["Commercial bank deposits"] if "Commercial bank deposits" in money_hist else pd.Series(dtype=float)
     sec = money_hist["Bank Treasury + agency securities"] if "Bank Treasury + agency securities" in money_hist else pd.Series(dtype=float)
-    mg, dg = _annualized_growth(m2, 91), _annualized_growth(dep, 91)
+
+    mg = _annualized_growth_asof(m2, None, 91)
+    dg = _annualized_growth_asof(dep, None, 91)
     vals_g = [x for x in [mg, dg] if x is not None]
     confirmation = sum(vals_g) / len(vals_g) if vals_g else None
 
+    mmg = mdg = mconfirm = None
+    matched_asof = None
+    if matched_quarter is not None:
+        qend = pd.Timestamp(matched_quarter).to_period("Q").end_time.normalize()
+        mmg = _annualized_growth_asof(m2, qend, 91)
+        mdg = _annualized_growth_asof(dep, qend, 91)
+        mv = [x for x in [mmg, mdg] if x is not None]
+        mconfirm = sum(mv) / len(mv) if mv else None
+        dates=[]
+        for ser in [m2,dep]:
+            ss=pd.to_numeric(ser,errors="coerce").dropna().sort_index()
+            ss=ss.loc[ss.index<=qend]
+            if not ss.empty: dates.append(ss.index[-1])
+        matched_asof=str(max(dates).date()) if dates else None
+
     sec_change = None
+    slr_change = slr_pct = None
     ssec = pd.to_numeric(sec, errors="coerce").dropna().sort_index()
     if not ssec.empty:
-        prior = ssec.loc[ssec.index <= ssec.index[-1] - pd.Timedelta(days=91)]
-        if not prior.empty:
-            sec_change = float(ssec.iloc[-1] - prior.iloc[-1])
+        latest=ssec.index[-1]
+        target=latest-pd.Timedelta(days=91)
+        prev=ssec.iloc[:-1]
+        if not prev.empty:
+            pdate=min(prev.index,key=lambda x:abs((pd.Timestamp(x)-target).days))
+            if abs((pd.Timestamp(pdate)-target).days)<=45:
+                sec_change=float(ssec.iloc[-1]-prev.loc[pdate])
+        slr_start=pd.Timestamp(SLR_POLICY["effective_date"])
+        before=ssec.loc[ssec.index<=slr_start]
+        if not before.empty and latest>=slr_start:
+            base=float(before.iloc[-1])
+            slr_change=float(ssec.iloc[-1]-base)
+            slr_pct=None if base==0 else slr_change/base*100.0
+
     latest_dates = [
-        s.dropna().index[-1]
-        for s in [m2, dep, sec]
-        if isinstance(s, pd.Series) and not s.dropna().empty
+        ser.dropna().index[-1]
+        for ser in [m2, dep, sec]
+        if isinstance(ser, pd.Series) and not ser.dropna().empty
     ]
     return {
         "m2_3m_annualized_pct": mg,
         "deposits_3m_annualized_pct": dg,
         "confirmation_3m_annualized_pct": confirmation,
+        "matched_m2_3m_annualized_pct": mmg,
+        "matched_deposits_3m_annualized_pct": mdg,
+        "matched_confirmation_3m_annualized_pct": mconfirm,
+        "matched_as_of": matched_asof,
         "bank_treasury_agency_3m_change_bn": sec_change,
+        "bank_treasury_agency_since_slr_bn": slr_change,
+        "bank_treasury_agency_since_slr_pct": slr_pct,
         "as_of": str(max(latest_dates).date()) if latest_dates else None,
     }
 
@@ -373,10 +446,10 @@ def summarize_treasury_financing(
     mmf_share = None if mmf is None else mmf / issuance * 100.0
     intermediated_share = None if monetary is None or dealer is None else (monetary + dealer) / issuance * 100.0
 
-    money = _summarize_money(money_hist)
+    money = _summarize_money(money_hist, q)
     funding = _summarize_funding(funding_hist)
     classification = classify_financing_regime(
-        monetary_share, money.get("confirmation_3m_annualized_pct"), dealer_share, foreign_share
+        monetary_share, money.get("matched_confirmation_3m_annualized_pct"), dealer_share, foreign_share
     )
 
     # Historical headline shares use the same broad bank definition. Any missing
@@ -407,6 +480,28 @@ def summarize_treasury_financing(
             "mmf_share_pct": None if not np.isfinite(mmf_h) else mmf_h / issue * 100,
         })
 
+    current_q = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None)).to_period("Q")
+    data_q = pd.Timestamp(q).to_period("Q")
+    quarter_lag = max(0, current_q.ordinal - data_q.ordinal)
+    timeliness = "CURRENT_QUARTER" if quarter_lag == 0 else "LAGGED_ONE_QUARTER" if quarter_lag == 1 else "LAGGED_TWO_PLUS_QUARTERS"
+    classification["provisional"] = bool(quarter_lag >= 2)
+    classification["data_timeliness"] = timeliness
+    classification["quarter_lag"] = int(quarter_lag)
+    if quarter_lag >= 2:
+        classification["reason"] += " Latest holder data lag the current quarter by two or more quarters, so treat this state as provisional."
+
+    slr_effect_q = pd.Period("2026Q2", freq="Q")
+    if data_q < slr_effect_q:
+        slr_test = {
+            "status": "FULL_EFFECT_NOT_YET_TESTABLE",
+            "reason": "The latest Z.1 financing quarter predates the April 1, 2026 full effective date. Early adoption was permitted January 1, so Q1 cannot isolate the rule's effect.",
+        }
+    else:
+        slr_test = {
+            "status": "POST_EFFECT_QUARTER_AVAILABLE",
+            "reason": "A post-April-1 Z.1 quarter is available, but any change remains correlation unless bank/dealer balance-sheet evidence independently supports the transmission channel.",
+        }
+
     detail_rows = [
         {"sector": label, "flow_saar_mn": vals.get(label), "share_of_issuance_pct": None if vals.get(label) is None else vals[label] / issuance * 100.0}
         for label in vals
@@ -425,13 +520,17 @@ def summarize_treasury_financing(
         "domestic_chartered_bank_absorption_pct": None if vals.get("U.S.-chartered depository institutions") is None else vals["U.S.-chartered depository institutions"] / issuance * 100.0,
         "foreign_bank_office_absorption_pct": None if vals.get("Foreign banking offices in U.S.") is None else vals["Foreign banking offices in U.S."] / issuance * 100.0,
         "foreign_absorption_pct": foreign_share,
-        "dealer_warehousing_pct": dealer_share,
+        "dealer_absorption_pct": dealer_share,
+        "dealer_warehousing_pct": dealer_share,  # backward-compatible alias; do not infer involuntary warehousing
         "mmf_absorption_pct": mmf_share,
         "monetary_plus_dealer_pct": intermediated_share,
         "money_confirmation": money,
         "funding_layer": funding,
         "classification": classification,
         "slr_policy": SLR_POLICY.copy(),
+        "slr_transmission_test": slr_test,
+        "data_timeliness": timeliness,
+        "quarter_lag": int(quarter_lag),
         "history": hist_rows,
         "methodology": {
             "holder_layer": "Z.1 F3.2.t quarterly marketable-Treasury transactions, SAAR; negative shares are preserved.",
@@ -439,9 +538,9 @@ def summarize_treasury_financing(
             "bank_definition": "U.S.-chartered depository institutions + foreign banking offices in U.S. + affiliated-area banks + credit unions.",
             "slr_scope": "The eSLR change applies to covered large U.S. banking organizations, not identically to every institution in the broad banking-system holder bucket.",
             "monetary_capable": "Fed/central-bank + broad banking-system absorption; this measures monetary capacity/transmission, not proven money creation.",
-            "money_confirmation": "Average of 3-month annualized M2 and commercial-bank-deposit growth when available.",
+            "money_confirmation": "Classification uses M2 and commercial-bank-deposit growth aligned to the same Z.1 quarter. A separate current-money reading is displayed as context only.",
             "h8_proxy": "Bank Treasury + agency securities is a high-frequency proxy and is not treated as Treasury-only ownership.",
-            "dealer_rule": "Dealer Treasury holdings are warehousing/intermediation, not final end-buyer demand.",
+            "dealer_rule": "Dealer net Treasury acquisition is inventory/intermediation exposure, not proof that securities were unsold or involuntarily warehoused.",
             "stablecoin_rule": "Stablecoin/tokenized-Treasury exposure is look-through context and is not added if the underlying security is already represented by a Z.1 holder.",
             "residual": "Residual is issuance minus displayed non-overlapping F3.2.t sectors; it remains unattributed rather than forced into a named buyer.",
         },

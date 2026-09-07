@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V3.4", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4.1", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -98,7 +98,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.1")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -207,7 +207,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.1 Roadmap"
 ])
 
 with exec_tab:
@@ -247,9 +247,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.4 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.1 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.1 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -340,7 +340,7 @@ with financing_tab:
         cls=tf.get("classification",{}) or {}
         mc=tf.get("monetary_capable_absorption_pct")
         fa=tf.get("fed_absorption_pct"); ba=tf.get("bank_absorption_pct")
-        foreign=tf.get("foreign_absorption_pct"); dealer=tf.get("dealer_warehousing_pct")
+        foreign=tf.get("foreign_absorption_pct"); dealer=tf.get("dealer_absorption_pct", tf.get("dealer_warehousing_pct"))
         mmf=tf.get("mmf_absorption_pct"); money=tf.get("money_confirmation",{}) or {}
         top=st.columns(6)
         top[0].metric("Financing regime",str(cls.get("state","UNKNOWN")),help="Heuristic pressure state, not a probability.")
@@ -348,8 +348,8 @@ with financing_tab:
         top[2].metric("Fed absorption","—" if fa is None else f"{fa:.1f}%")
         top[3].metric("Banks + credit unions","—" if ba is None else f"{ba:.1f}%")
         top[4].metric("Foreign absorption","—" if foreign is None else f"{foreign:.1f}%")
-        top[5].metric("Dealer warehousing","—" if dealer is None else f"{dealer:.1f}%")
-        st.caption(f"Latest common Z.1 quarter: {tf.get('as_of_quarter','?')} | Net marketable issuance: {fmt_money((tf.get('issuance_saar_mn') or 0)*1e6)} SAAR. Negative holder shares are preserved rather than clamped to zero.")
+        top[5].metric("Dealer net absorption","—" if dealer is None else f"{dealer:.1f}%")
+        st.caption(f"Latest common Z.1 quarter: {tf.get('as_of_quarter','?')} | Net marketable issuance: {fmt_money((tf.get('issuance_saar_mn') or 0)*1e6)} SAAR | Timeliness: {tf.get('data_timeliness','UNKNOWN')}. Negative holder shares are preserved rather than clamped to zero.")
         if cls.get("reason"):
             (st.error if cls.get("state")=="RED" else st.warning if cls.get("state") in {"ORANGE","YELLOW"} else st.success)(cls.get("reason"))
         if cls.get("confirmations"): st.write("**Market-structure confirmations:** "+"; ".join(cls.get("confirmations")))
@@ -362,14 +362,16 @@ with financing_tab:
             st.plotly_chart(px.bar(show,x="holder",y="Share of issuance %",text="Share of issuance %",title=f"Treasury absorption by tracked holder — {tf.get('as_of_quarter','latest')}"),width="stretch")
             st.dataframe(show[["holder","Flow (SAAR $B)","Share of issuance %","role"]].round(2),width="stretch",hide_index=True)
 
-        st.subheader("Money-creation confirmation")
-        mc2=st.columns(4)
-        m2g=money.get("m2_3m_annualized_pct"); dg=money.get("deposits_3m_annualized_pct"); cg=money.get("confirmation_3m_annualized_pct"); bs=money.get("bank_treasury_agency_3m_change_bn")
-        mc2[0].metric("M2 — 3m annualized","—" if m2g is None else f"{m2g:+.1f}%")
-        mc2[1].metric("Bank deposits — 3m annualized","—" if dg is None else f"{dg:+.1f}%")
-        mc2[2].metric("Money confirmation","—" if cg is None else f"{cg:+.1f}%")
-        mc2[3].metric("Bank Treasury+agency — 3m","—" if bs is None else f"${bs:+.1f}B")
-        st.caption("The H.8 bank-security series includes agencies as well as Treasuries and is therefore confirmation/proxy data only. It is never substituted for the quarterly Treasury-only Z.1 holder flow.")
+        st.subheader("Monetary backdrop — matched quarter vs current")
+        mc2=st.columns(5)
+        mm2=money.get("matched_m2_3m_annualized_pct"); mdg=money.get("matched_deposits_3m_annualized_pct"); mcg=money.get("matched_confirmation_3m_annualized_pct")
+        cg=money.get("confirmation_3m_annualized_pct"); bs=money.get("bank_treasury_agency_3m_change_bn")
+        mc2[0].metric("Matched-Q M2 — 3m ann.","—" if mm2 is None else f"{mm2:+.1f}%")
+        mc2[1].metric("Matched-Q deposits — 3m ann.","—" if mdg is None else f"{mdg:+.1f}%")
+        mc2[2].metric("Matched-Q confirmation","—" if mcg is None else f"{mcg:+.1f}%")
+        mc2[3].metric("Current money backdrop","—" if cg is None else f"{cg:+.1f}%")
+        mc2[4].metric("Bank Treasury+agency — 3m","—" if bs is None else f"${bs:+.1f}B")
+        st.caption(f"The financing-state classifier uses money growth aligned to {tf.get('as_of_quarter','the Z.1 quarter')} (money data through {money.get('matched_as_of') or 'n/a'}), not today's newer M2/deposit reading. Current money growth is context only. The H.8 security proxy includes agencies as well as Treasuries.")
 
         st.subheader("Repo funding / intermediation layer")
         funding=tf.get("funding_layer",{}) or {}
@@ -402,6 +404,12 @@ with financing_tab:
         sc[2].metric("Treasury exemption","YES" if slr.get("treasury_exemption") else "NO")
         sc[3].metric("Reserve exemption","YES" if slr.get("reserve_exemption") else "NO")
         st.info(str(slr.get("description","")))
+        slrt=tf.get("slr_transmission_test",{}) or {}
+        if slrt.get("status"):
+            st.warning(f"SLR transmission test: {slrt.get('status')} — {slrt.get('reason','')}")
+        slr_bn=money.get("bank_treasury_agency_since_slr_bn"); slr_pct=money.get("bank_treasury_agency_since_slr_pct")
+        if slr_bn is not None:
+            st.caption(f"H.8 proxy since Apr. 1, 2026: bank Treasury+agency securities {slr_bn:+.1f}B ({slr_pct:+.1f}% if available). This includes agencies and is correlation/proxy evidence only, not proof the eSLR rule caused Treasury buying.")
         if slr.get("scope_note"): st.caption(str(slr.get("scope_note")))
 
         with st.expander("Detailed Z.1 sectors"):
@@ -418,7 +426,7 @@ with financing_tab:
 - **Holder layer:** Fed, banks, foreign sector, dealers, MMFs and households are Treasury-holder flows.
 - **Funding layer:** repo, hedge funds/basis trades and SLR capacity explain *how* positions are financed; they are not added as another holder bucket.
 - **Monetary-capable ≠ proven monetization:** Fed + bank absorption is a transmission-capacity measure. M2/deposit growth is required as confirmation.
-- **Dealers ≠ final demand:** rising dealer share is warehousing/intermediation pressure and can be a warning rather than healthy end-buyer demand.
+- **Dealers ≠ final demand:** dealer net Treasury acquisition is inventory/intermediation exposure. It can be a warning, but it does not prove securities were unsold or involuntarily warehoused.
 - **Stablecoins are look-through:** tokenized/stablecoin Treasury exposure is not added again when the underlying Treasury is already held by an MMF/issuer sector.
 """)
 

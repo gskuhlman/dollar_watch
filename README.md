@@ -1,15 +1,15 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.1
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
-## V3.4 Treasury-financing transmission release
+## V3.4.1 Treasury-financing transmission release
 
-V3.4 keeps the six crisis regimes intact and adds a separate **Who Is Financing the Deficit?** analytical layer. The purpose is to detect a shift from conventional private/foreign Treasury absorption toward Fed/bank/dealer balance-sheet absorption without falsely calling every Treasury purchase monetization.
+V3.4.1 keeps the six crisis regimes intact and adds a separate **Who Is Financing the Deficit?** analytical layer. The purpose is to detect a shift from conventional private/foreign Treasury absorption toward Fed/bank/dealer balance-sheet absorption without falsely calling every Treasury purchase monetization.
 
 - **Quarterly Z.1 holder-flow engine.** Tracks net marketable Treasury issuance across the full major F3.2.t holder map: Fed/central bank, U.S. and foreign-bank offices, credit unions, foreign sector, dealers, MMFs, households, mutual funds/ETFs/CEFs, insurers, pensions, state/local buyers, nonfinancial business, GSEs and other financials.
 - **Monetary-capable absorption.** Calculates Fed + U.S. bank/credit-union absorption as a share of issuance. This is explicitly a capacity/transmission measure, not proof of money creation.
 - **Money confirmation.** Uses 3-month annualized M2 and commercial-bank deposit growth to confirm whether Treasury absorption is occurring alongside broad-money expansion. H.8 Treasury+agency holdings are displayed as a high-frequency proxy only.
-- **Financing regime classifier.** GREEN/YELLOW/ORANGE/RED states combine monetary-capable absorption with money confirmation and market-structure confirmation such as dealer warehousing. The state is a heuristic pressure classification, not a probability.
+- **Financing regime classifier.** GREEN/YELLOW/ORANGE/RED states combine monetary-capable absorption with money confirmation and market-structure confirmation such as elevated dealer net absorption. The state is a heuristic pressure classification, not a probability.
 - **SLR policy state.** Records the April 1, 2026 enhanced-SLR recalibration as `RELAXED`, while explicitly recording that neither Treasuries nor Fed reserve balances were exempted from total leverage exposure.
 - **Repo funding layer.** Z.1 F4.1.s dealer, MMF, U.S.-bank and foreign-bank repo levels are shown separately from ownership, including dealer gross repo balance sheet and net repo borrowing. Repo collateral is not Treasury-only, so these values diagnose funding/leverage rather than deficit absorption.
 - **Double-counting guardrail.** Holder flows and funding/intermediation are separate layers. Repo, hedge-fund basis trades, stablecoin look-through exposure and SLR capacity are never added as extra Treasury-holder demand on top of Z.1 holders.

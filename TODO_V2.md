@@ -1,3 +1,13 @@
+## V3.4.1 — Treasury financing calibration patch
+
+- [x] Replace two obsolete/404 nonfinancial Treasury-flow FRED IDs with live F3.2.t series.
+- [x] Align M2/deposit confirmation to the same quarter as Z.1 holder absorption; keep current money growth as context only.
+- [x] Mark two-plus-quarter financing data as lagged/provisional.
+- [x] Add SLR transmission testability: Q1 cannot isolate the April 1 full-effective-date change.
+- [x] Add H.8 Treasury+agency change since April 1 as a clearly labeled proxy, never causal proof.
+- [x] Replace dealer "warehousing" language with net absorption/inventory unless direct evidence supports stronger wording.
+- [x] Forbid "MMF out of bills" language from non-maturity-specific Z.1 flows.
+
 # dollar_watch roadmap
 
 ## V3.4 — Treasury financing / bank monetization transmission completed
