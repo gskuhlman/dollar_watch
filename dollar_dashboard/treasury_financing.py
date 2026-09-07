@@ -53,6 +53,15 @@ Z1_FINANCING_SERIES = {
     "Other financial business": "BOGZ1FA503061123Q",
 }
 
+# The Aug. 28, 2026 Z.1 preview adds hedge funds as an explicit F3.2.t
+# Treasury-holder transaction row (FA623061103). The preview contains no values,
+# so we only attempt the corresponding FRED series on/after the scheduled Q2
+# release date. Failure is optional metadata and does not lower core coverage.
+OPTIONAL_Z1_FINANCING_SERIES = {
+    "Hedge funds": "BOGZ1FA623061103Q",
+}
+OPTIONAL_Z1_ACTIVATION_DATE = pd.Timestamp("2026-09-11")
+
 # Higher-frequency confirmation data. These are levels and are not added to Z.1
 # holder transactions.
 MONEY_CONFIRMATION_SERIES = {
@@ -71,7 +80,21 @@ FUNDING_LAYER_SERIES = {
     "U.S. bank repo assets": "BOGZ1FL762051005Q",
     "Foreign-bank repo liabilities": "BOGZ1FL752151005Q",
     "Foreign-bank repo assets": "BOGZ1FL752051005Q",
+    # Hedge-fund structural overlays. These are deliberately not treated as
+    # Treasury-holder transaction flows or direct basis-trade leverage.
+    "Hedge fund Treasury holdings": "BOGZ1FL623061103Q",
+    "Hedge fund repo assets": "BOGZ1FL622051003Q",
+    "Hedge fund domestic repo liabilities": "BOGZ1FL622151013Q",
 }
+
+# Known official Z.1 release dates used to distinguish normal publication lag
+# from an actually stale/missed release. Unlisted future quarters fall back to
+# an approximate 75-day post-quarter publication lag.
+Z1_KNOWN_RELEASE_DATES = {
+    "2026Q1": "2026-06-11",
+    "2026Q2": "2026-09-11",
+}
+Z1_TYPICAL_RELEASE_LAG_DAYS = 75
 
 SLR_POLICY = {
     "regime": "RELAXED",
@@ -299,7 +322,7 @@ def _summarize_money(money_hist: pd.DataFrame | None, matched_quarter=None) -> d
 
 
 def _summarize_funding(funding_hist: pd.DataFrame | None) -> dict:
-    """Latest repo levels and one-quarter changes; never counted as Treasury demand."""
+    """Latest repo/hedge-fund structure levels; never counted as Treasury demand."""
     if funding_hist is None or funding_hist.empty:
         return {"available": False, "rows": [], "as_of_quarter": None}
     latest_dates = []
@@ -316,9 +339,23 @@ def _summarize_funding(funding_hist: pd.DataFrame | None) -> dict:
         rows.append({"metric": label, "level_bn": latest, "qoq_change_bn": qoq, "date": str(pd.Timestamp(s.index[-1]).date())})
 
     by = {r["metric"]: r["level_bn"] for r in rows}
+    byrow = {r["metric"]: r for r in rows}
     dealer_liab, dealer_asset = by.get("Dealer repo liabilities"), by.get("Dealer repo assets")
     dealer_gross = None if dealer_liab is None or dealer_asset is None else dealer_liab + dealer_asset
     dealer_net_borrow = None if dealer_liab is None or dealer_asset is None else dealer_liab - dealer_asset
+
+    hf_tsy = by.get("Hedge fund Treasury holdings")
+    hf_repo_assets = by.get("Hedge fund repo assets")
+    hf_repo_liab = by.get("Hedge fund domestic repo liabilities")
+    hf_ratio = None
+    hf_ratio_asof = None
+    if hf_tsy not in (None, 0) and hf_repo_liab is not None:
+        d1 = (byrow.get("Hedge fund Treasury holdings") or {}).get("date")
+        d2 = (byrow.get("Hedge fund domestic repo liabilities") or {}).get("date")
+        if d1 and d1 == d2:
+            hf_ratio = hf_repo_liab / hf_tsy * 100.0
+            hf_ratio_asof = d1
+
     return {
         "available": bool(rows),
         "as_of_quarter": _period_label(max(latest_dates)) if latest_dates else None,
@@ -326,11 +363,58 @@ def _summarize_funding(funding_hist: pd.DataFrame | None) -> dict:
         "dealer_repo_gross_bn": dealer_gross,
         "dealer_repo_net_borrowing_bn": dealer_net_borrow,
         "mmf_repo_assets_bn": by.get("MMF repo assets"),
+        "hedge_fund_treasury_holdings_bn": hf_tsy,
+        "hedge_fund_repo_assets_bn": hf_repo_assets,
+        "hedge_fund_domestic_repo_liabilities_bn": hf_repo_liab,
+        "hedge_fund_domestic_repo_to_treasury_pct": hf_ratio,
+        "hedge_fund_ratio_asof": hf_ratio_asof,
         "note": (
-            "Repo is a funding/intermediation overlay, not a Treasury-holder bucket. Z.1 repo collateral is not Treasury-only, "
-            "so these levels diagnose balance-sheet leverage/capacity rather than direct deficit absorption."
+            "Repo and hedge-fund structure are funding/intermediation overlays, not Treasury-holder transaction buckets. "
+            "Z.1 repo collateral is not Treasury-only. Hedge-fund domestic repo liabilities cover domestic counterparties only, "
+            "and the repo/Treasury ratio is a partial structural proxy—not gross leverage and not direct basis-trade exposure."
         ),
     }
+
+
+def _expected_latest_z1_quarter(now=None) -> tuple[pd.Period, str | None]:
+    """Return the latest quarter whose Z.1 release should be available by *now*.
+
+    Known official release dates take precedence. For quarters not in the small
+    calendar map, use a conservative ~75-day post-quarter-end release lag.
+    """
+    now_ts = pd.Timestamp(now or datetime.now(timezone.utc)).tz_localize(None)
+    # Check known release dates first.
+    known = []
+    for qlabel, d in Z1_KNOWN_RELEASE_DATES.items():
+        dt = pd.Timestamp(d)
+        if dt <= now_ts.normalize():
+            known.append((pd.Period(qlabel, freq="Q"), dt))
+    # Generic candidate from typical lag.
+    current_q = now_ts.to_period("Q")
+    generic = []
+    for offset in range(0, 8):
+        q = current_q - offset
+        due = q.end_time.normalize() + pd.Timedelta(days=Z1_TYPICAL_RELEASE_LAG_DAYS)
+        if due <= now_ts.normalize():
+            generic.append((q, due))
+            break
+    candidates = known + generic
+    if not candidates:
+        q = current_q - 1
+        return q, None
+    q, due = max(candidates, key=lambda x: x[0].ordinal)
+    return q, str(pd.Timestamp(due).date())
+
+
+def _next_z1_release_after(data_q: pd.Period) -> tuple[str, str | None]:
+    nq = data_q + 1
+    label = str(nq).replace("Q", "Q")
+    # pd.Period string is already e.g. 2026Q2.
+    known = Z1_KNOWN_RELEASE_DATES.get(str(nq))
+    if known:
+        return str(nq), known
+    due = nq.end_time.normalize() + pd.Timedelta(days=Z1_TYPICAL_RELEASE_LAG_DAYS)
+    return str(nq), str(due.date())
 
 
 def summarize_treasury_financing(
@@ -393,6 +477,9 @@ def summarize_treasury_financing(
         }
 
     vals = {label: _series_value(z1_hist, label, q) for label in Z1_FINANCING_SERIES if label != "Net marketable Treasury issuance"}
+    for label in OPTIONAL_Z1_FINANCING_SERIES:
+        if label in z1_hist.columns:
+            vals[label] = _series_value(z1_hist, label, q)
     fed = vals.get("Federal Reserve / central bank")
     bank_system = _sum_complete([vals.get(x) for x in bank_components])
     monetary = None if fed is None or bank_system is None else fed + bank_system
@@ -416,6 +503,7 @@ def summarize_treasury_financing(
         ("Money market funds", vals.get("Money market funds"), "END_BUYER_CASH_POOL"),
         ("Households & nonprofits", vals.get("Households & nonprofits"), "END_BUYER"),
         ("Mutual funds + ETFs + CEFs", investment_funds, "END_BUYER"),
+        ("Hedge funds", vals.get("Hedge funds"), "LEVERAGED_END_BUYER"),
         ("Insurance + pensions", insurance_pensions, "END_BUYER"),
         ("State & local governments", vals.get("State & local governments"), "END_BUYER"),
         ("Nonfinancial business", nonfinancial_business, "END_BUYER"),
@@ -444,6 +532,8 @@ def summarize_treasury_financing(
     dealer_share = None if dealer is None else dealer / issuance * 100.0
     foreign_share = None if foreign is None else foreign / issuance * 100.0
     mmf_share = None if mmf is None else mmf / issuance * 100.0
+    hedge = vals.get("Hedge funds")
+    hedge_share = None if hedge is None else hedge / issuance * 100.0
     intermediated_share = None if monetary is None or dealer is None else (monetary + dealer) / issuance * 100.0
 
     money = _summarize_money(money_hist, q)
@@ -467,6 +557,7 @@ def summarize_treasury_financing(
         bank_vals = [at(x) for x in bank_components]
         bank = sum(bank_vals) if all(np.isfinite(x) for x in bank_vals) else np.nan
         dealer_h, foreign_h, mmf_h = at("Security brokers & dealers"), at("Foreign sector"), at("Money market funds")
+        hedge_h = at("Hedge funds") if "Hedge funds" in z1_hist.columns else np.nan
         mon = f + bank if np.isfinite(f) and np.isfinite(bank) else np.nan
         hist_rows.append({
             "quarter": _period_label(idx),
@@ -478,17 +569,34 @@ def summarize_treasury_financing(
             "dealer_share_pct": None if not np.isfinite(dealer_h) else dealer_h / issue * 100,
             "foreign_share_pct": None if not np.isfinite(foreign_h) else foreign_h / issue * 100,
             "mmf_share_pct": None if not np.isfinite(mmf_h) else mmf_h / issue * 100,
+            "hedge_fund_share_pct": None if not np.isfinite(hedge_h) else hedge_h / issue * 100,
         })
 
-    current_q = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None)).to_period("Q")
+    now_ts = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
+    current_q = now_ts.to_period("Q")
     data_q = pd.Timestamp(q).to_period("Q")
-    quarter_lag = max(0, current_q.ordinal - data_q.ordinal)
-    timeliness = "CURRENT_QUARTER" if quarter_lag == 0 else "LAGGED_ONE_QUARTER" if quarter_lag == 1 else "LAGGED_TWO_PLUS_QUARTERS"
-    classification["provisional"] = bool(quarter_lag >= 2)
+    current_quarter_gap = max(0, current_q.ordinal - data_q.ordinal)
+    expected_q, expected_release_due = _expected_latest_z1_quarter(now_ts)
+    release_lag_quarters = max(0, expected_q.ordinal - data_q.ordinal)
+    if release_lag_quarters == 0:
+        timeliness = "LATEST_EXPECTED_RELEASE"
+    elif release_lag_quarters == 1:
+        timeliness = "ONE_RELEASE_LATE"
+    else:
+        timeliness = "TWO_PLUS_RELEASES_LATE"
+    next_q, next_release_date = _next_z1_release_after(data_q)
+    classification["provisional"] = bool(release_lag_quarters > 0)
+    classification["historical_period"] = bool(data_q < current_q)
     classification["data_timeliness"] = timeliness
-    classification["quarter_lag"] = int(quarter_lag)
-    if quarter_lag >= 2:
-        classification["reason"] += " Latest holder data lag the current quarter by two or more quarters, so treat this state as provisional."
+    classification["quarter_lag"] = int(current_quarter_gap)  # backward-compatible: distance from current calendar quarter
+    classification["release_lag_quarters"] = int(release_lag_quarters)
+    classification["expected_latest_quarter"] = str(expected_q)
+    classification["next_expected_quarter"] = next_q
+    classification["next_release_date"] = next_release_date
+    if release_lag_quarters > 0:
+        classification["reason"] += " The holder data are behind the latest Z.1 release that should already be available, so treat this state as provisional."
+    elif data_q < current_q:
+        classification["reason"] += " This is the latest expected official quarterly Z.1 observation, but it is historical and should not be described as the current quarter's financing mix."
 
     slr_effect_q = pd.Period("2026Q2", freq="Q")
     if data_q < slr_effect_q:
@@ -518,11 +626,13 @@ def summarize_treasury_financing(
         "fed_absorption_pct": None if fed is None else fed / issuance * 100.0,
         "bank_absorption_pct": None if bank_system is None else bank_system / issuance * 100.0,
         "domestic_chartered_bank_absorption_pct": None if vals.get("U.S.-chartered depository institutions") is None else vals["U.S.-chartered depository institutions"] / issuance * 100.0,
+        "eslr_relevant_bank_proxy_absorption_pct": None if vals.get("U.S.-chartered depository institutions") is None else vals["U.S.-chartered depository institutions"] / issuance * 100.0,
         "foreign_bank_office_absorption_pct": None if vals.get("Foreign banking offices in U.S.") is None else vals["Foreign banking offices in U.S."] / issuance * 100.0,
         "foreign_absorption_pct": foreign_share,
         "dealer_absorption_pct": dealer_share,
         "dealer_warehousing_pct": dealer_share,  # backward-compatible alias; do not infer involuntary warehousing
         "mmf_absorption_pct": mmf_share,
+        "hedge_fund_absorption_pct": hedge_share,
         "monetary_plus_dealer_pct": intermediated_share,
         "money_confirmation": money,
         "funding_layer": funding,
@@ -530,17 +640,23 @@ def summarize_treasury_financing(
         "slr_policy": SLR_POLICY.copy(),
         "slr_transmission_test": slr_test,
         "data_timeliness": timeliness,
-        "quarter_lag": int(quarter_lag),
+        "quarter_lag": int(current_quarter_gap),
+        "release_lag_quarters": int(release_lag_quarters),
+        "expected_latest_quarter": str(expected_q),
+        "expected_release_due": expected_release_due,
+        "next_expected_quarter": next_q,
+        "next_release_date": next_release_date,
         "history": hist_rows,
         "methodology": {
             "holder_layer": "Z.1 F3.2.t quarterly marketable-Treasury transactions, SAAR; negative shares are preserved.",
-            "funding_layer": "Z.1 F4.1.s repo levels are overlays only and are never added to Treasury-holder flows; repo collateral is not Treasury-only.",
+            "funding_layer": "Z.1 repo levels plus hedge-fund Treasury/repo structure are overlays only and are never added to Treasury-holder flows; repo collateral is not Treasury-only and hedge-fund domestic repo liabilities are only a partial borrowing measure.",
             "bank_definition": "U.S.-chartered depository institutions + foreign banking offices in U.S. + affiliated-area banks + credit unions.",
-            "slr_scope": "The eSLR change applies to covered large U.S. banking organizations, not identically to every institution in the broad banking-system holder bucket.",
+            "slr_scope": "The eSLR change applies to covered large U.S. banking organizations, not identically to every institution in the broad banking-system holder bucket. Use U.S.-chartered depository absorption only as a broad proxy for the potentially eSLR-relevant bank channel; it is still wider than the GSIB-only population.",
             "monetary_capable": "Fed/central-bank + broad banking-system absorption; this measures monetary capacity/transmission, not proven money creation.",
             "money_confirmation": "Classification uses M2 and commercial-bank-deposit growth aligned to the same Z.1 quarter. A separate current-money reading is displayed as context only.",
             "h8_proxy": "Bank Treasury + agency securities is a high-frequency proxy and is not treated as Treasury-only ownership.",
             "dealer_rule": "Dealer net Treasury acquisition is inventory/intermediation exposure, not proof that securities were unsold or involuntarily warehoused.",
+            "hedge_fund_holder_rule": "The 2026:Q2 Z.1 schema adds an explicit hedge-fund Treasury transaction row. It is included only when the official/FRED transaction series is actually available; market-value Treasury levels are never substituted for transaction flows.",
             "stablecoin_rule": "Stablecoin/tokenized-Treasury exposure is look-through context and is not added if the underlying security is already represented by a Z.1 holder.",
             "residual": "Residual is issuance minus displayed non-overlapping F3.2.t sectors; it remains unattributed rather than forced into a named buyer.",
         },
@@ -559,6 +675,14 @@ def fetch_treasury_financing(
         except Exception as exc:
             z1[label] = pd.Series(dtype=float, name=sid)
             errors[f"holder:{label}"] = str(exc)
+    optional_holder_errors = {}
+    if pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).normalize() >= OPTIONAL_Z1_ACTIVATION_DATE:
+        for label, sid in OPTIONAL_Z1_FINANCING_SERIES.items():
+            try:
+                z1[label] = fetcher(sid, start=start)
+            except Exception as exc:
+                optional_holder_errors[label] = str(exc)
+
     z1_hist = pd.concat(z1, axis=1).sort_index() if z1 else pd.DataFrame()
 
     money = {}
@@ -584,5 +708,10 @@ def fetch_treasury_financing(
     summary["holder_series_ok"] = sum(1 for c in Z1_FINANCING_SERIES if c in z1_hist and not z1_hist[c].dropna().empty)
     summary["holder_series_total"] = len(Z1_FINANCING_SERIES)
     summary["holder_coverage_pct"] = 100.0 * summary["holder_series_ok"] / max(1, summary["holder_series_total"])
+    summary["optional_holder_series"] = {
+        "available": [label for label in OPTIONAL_Z1_FINANCING_SERIES if label in z1_hist and not z1_hist[label].dropna().empty],
+        "errors": optional_holder_errors,
+        "activation_date": str(OPTIONAL_Z1_ACTIVATION_DATE.date()),
+    }
     summary["retrieved_at"] = datetime.now(timezone.utc).isoformat()
     return z1_hist, money_hist, funding_hist, summary

@@ -1,10 +1,31 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.1
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.5
 
+## V3.4.5 semantic/calendar hardening
+
+- Fixes a silent CFTC-calendar bug: `scoring.py` used `pd.Timestamp` without importing pandas, so derived publication/calendar fields were being swallowed by the existing error guard and returned as null.
+- Separates the CFTC lifecycle into latest position-as-of, latest expected Friday publication, next Tuesday position-as-of, and next expected Friday publication.
+- Adds an explicit funding-observation scope object so strong domestic repo/facility coverage cannot be narrated as globally benign when live offshore cross-currency-basis/FX-swap coverage is partial.
+- Tightens TGA language: a TGA rebuild is a cash-balance rebuild/liquidity drain while funds remain at the Fed; it is not automatically "prefunding future supply."
+- Keeps all six regimes and V3.4 Treasury-financing score math unchanged.
+
+
+## V3.4.4 chart compatibility patch
+
+Treasury Financing history now normalizes mixed historical numeric/string fields and plots in Plotly long form, preventing wide-form dtype failures when snapshots span multiple app versions. Persisted history is not mutated.
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
+
+## V3.4.4 release-aware financing calibration
+
+V3.4.4 keeps the six-regime model unchanged and tightens the V3.4 Treasury-financing interpretation. Z.1 timeliness is now measured against expected release availability rather than calendar-quarter distance; eSLR inference uses a narrower U.S.-chartered-bank proxy instead of the broad depository bucket; CFTC Tuesday position dates are separated from Friday publication dates; and generated dollar amounts are escaped before Streamlit markdown rendering so currency text is not mistaken for LaTeX.
+
+
+## V3.4.2 runtime-hardening patch
+
+V3.4.2 keeps the V3.4.1 Treasury-financing model and adds targeted hardening for malformed official PDF xref tables. Recoverable pypdf pointer warnings are suppressed locally; genuine extraction failures still flow to Data Health/cache fallback.
 
 ## V3.4.1 Treasury-financing transmission release
 
-V3.4.1 keeps the six crisis regimes intact and adds a separate **Who Is Financing the Deficit?** analytical layer. The purpose is to detect a shift from conventional private/foreign Treasury absorption toward Fed/bank/dealer balance-sheet absorption without falsely calling every Treasury purchase monetization.
+V3.4.2 keeps the six crisis regimes intact and adds a separate **Who Is Financing the Deficit?** analytical layer. The purpose is to detect a shift from conventional private/foreign Treasury absorption toward Fed/bank/dealer balance-sheet absorption without falsely calling every Treasury purchase monetization.
 
 - **Quarterly Z.1 holder-flow engine.** Tracks net marketable Treasury issuance across the full major F3.2.t holder map: Fed/central bank, U.S. and foreign-bank offices, credit unions, foreign sector, dealers, MMFs, households, mutual funds/ETFs/CEFs, insurers, pensions, state/local buyers, nonfinancial business, GSEs and other financials.
 - **Monetary-capable absorption.** Calculates Fed + U.S. bank/credit-union absorption as a share of issuance. This is explicitly a capacity/transmission measure, not proof of money creation.

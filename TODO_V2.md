@@ -1,3 +1,28 @@
+## V3.4.5 — Semantic/calendar hardening
+
+- [x] Split CFTC latest/next position-as-of dates from their expected Friday publication dates.
+- [x] Add funding-observation scope so partial offshore coverage constrains global funding language.
+- [x] Prevent TGA cash-balance rebuilds from being called future-supply prefunding without explicit evidence.
+- [x] Preserve six-regime and Treasury-financing score math.
+
+## V3.4.4 — Release-aware Treasury/CFTC calibration
+
+- [x] Treat Q1 Z.1 as latest expected official release before the scheduled Q2 publication, rather than "two-plus quarters stale."
+- [x] Separate current-calendar-quarter gap from actual missed-release lag.
+- [x] Separate broad monetary-capable bank absorption from a U.S.-chartered-bank eSLR channel proxy.
+- [x] Distinguish CFTC Tuesday position-as-of dates from expected Friday publication dates.
+- [x] Escape generated currency dollar signs before Streamlit Markdown rendering.
+- [x] Add direct hedge-fund Treasury/repo structural proxies without mislabeling them as basis-trade leverage.
+- [x] Prepare optional ingestion for the new Q2 Z.1 hedge-fund Treasury transaction holder row after official release.
+- [x] Harden low-coverage red-team language against categorical "a genuine crisis cannot coexist" claims.
+
+## V3.4.2 — PDF parser runtime hardening
+
+- [x] Suppress recoverable pypdf malformed-xref warning chatter locally.
+- [x] Explicit non-strict parsing for official PDFs.
+- [x] Reject HTTP-200 non-PDF bodies before parser invocation.
+- [x] Preserve Data Health/cache fallback for genuine extraction failures.
+
 ## V3.4.1 — Treasury financing calibration patch
 
 - [x] Replace two obsolete/404 nonfinancial Treasury-flow FRED IDs with live F3.2.t series.

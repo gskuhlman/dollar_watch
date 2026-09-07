@@ -33,7 +33,9 @@ def test_q1_style_absorption_and_negative_mmf_preserved():
     assert out['mmf_absorption_pct'] < 0
     assert out['classification']['state'] in {'ORANGE','RED'}
     assert out['money_confirmation']['matched_confirmation_3m_annualized_pct'] is not None
-    assert out['classification']['provisional'] is True
+    # Release-aware calibration: on 2026-09-07 Q1 is still the latest expected official Z.1 release.
+    assert out['classification']['historical_period'] is True
+    assert out['classification']['release_lag_quarters'] == 0
     assert out['slr_transmission_test']['status']=='FULL_EFFECT_NOT_YET_TESTABLE'
     mmf=next(x for x in out['holders'] if x['holder']=='Money market funds')
     assert mmf['share_of_issuance_pct'] < 0

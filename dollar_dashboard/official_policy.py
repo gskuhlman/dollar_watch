@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import re
 import time
@@ -15,9 +16,9 @@ from urllib.parse import urljoin
 import requests
 
 UA_VARIANTS=[
-    {"User-Agent":"dollar_watch/3.4.1 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
+    {"User-Agent":"dollar_watch/3.4.5 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
     {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36","Accept-Language":"en-US,en;q=0.9"},
-    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4.1; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
+    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4.5; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
 ]
 UA=UA_VARIANTS[0]
 
@@ -345,18 +346,54 @@ def fetch_japan_mof_intervention(timeout:int=12)->dict:
 
 
 def _pdf_text(url:str,timeout:int=15)->dict:
-    # Try live PDF + pypdf. If unavailable, fall back to a dated official summary seed.
+    """Fetch/extract an official PDF without leaking recoverable pypdf parser noise.
+
+    Some official PDFs contain stale/corrupt xref pointers.  pypdf in non-strict mode
+    repairs around those entries but logs messages such as "Ignoring wrong pointing
+    object ...".  Those are parser warnings, not collection failures.  We suppress
+    only pypdf._reader WARNING chatter during this extraction while preserving ERROR
+    logs and exceptions.  A genuinely unusable PDF still falls back through the
+    normal validated-cache path and is visible to Data Health.
+    """
     try:
         r=_get(url,timeout)
+        content=r.content or b''
+        # A CDN/error page can arrive with HTTP 200.  Refuse to feed HTML into pypdf.
+        if not content.lstrip().startswith(b'%PDF-'):
+            ctype=(r.headers.get('content-type','') if getattr(r,'headers',None) else '')
+            raise ValueError(f'Official PDF endpoint returned non-PDF content ({ctype or "unknown content-type"})')
         from pypdf import PdfReader
-        reader=PdfReader(io.BytesIO(r.content)); text='\n'.join((p.extract_text() or '') for p in reader.pages)
-        text=re.sub(r'\s+',' ',text).strip(); _cache_put(url,text,r.url,'application/pdf')
-        return {"ok":bool(text),"text":text,"source_url":r.url,"fetch_mode":"LIVE_PDF","live_reachable":True}
+        pdf_logger=logging.getLogger('pypdf._reader')
+        prior_level=pdf_logger.level
+        try:
+            # Explicit non-strict mode repairs malformed xref pointers.  Raise the
+            # logger floor only to ERROR so genuine parser errors remain visible.
+            pdf_logger.setLevel(logging.ERROR)
+            reader=PdfReader(io.BytesIO(content), strict=False)
+            text='\n'.join((page.extract_text() or '') for page in reader.pages)
+        finally:
+            pdf_logger.setLevel(prior_level)
+        text=re.sub(r'\s+',' ',text).strip()
+        if not text:
+            raise ValueError('PDF parsed but yielded no extractable text')
+        _cache_put(url,text,r.url,'application/pdf')
+        return {
+            "ok":True,"text":text,"source_url":r.url,"fetch_mode":"LIVE_PDF",
+            "live_reachable":True,"pdf_parser":"pypdf_strict_false",
+            "recoverable_parser_warnings_suppressed":True,
+        }
     except Exception as exc:
         cached=cached_official_source_text(url)
         if cached.get('ok'):
-            return {"ok":True,"text":cached.get('text',''),"source_url":cached.get('final_url') or url,"fetch_mode":"LAST_KNOWN_CACHE","live_reachable":False,"error":str(exc)}
-        return {"ok":False,"text":"","source_url":url,"fetch_mode":"FAILED","live_reachable":False,"error":str(exc)}
+            return {
+                "ok":True,"text":cached.get('text',''),"source_url":cached.get('final_url') or url,
+                "fetch_mode":"LAST_KNOWN_CACHE","live_reachable":False,"error":str(exc),
+                "pdf_parser":"pypdf_strict_false",
+            }
+        return {
+            "ok":False,"text":"","source_url":url,"fetch_mode":"FAILED",
+            "live_reachable":False,"error":str(exc),"pdf_parser":"pypdf_strict_false",
+        }
 
 
 def intervention_history_seed()->list[dict]:

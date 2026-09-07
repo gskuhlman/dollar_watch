@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +29,13 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V3.4.1", page_icon="💵", layout="wide")
+def render_generated_markdown(text: str) -> None:
+    """Render generated macro prose without Streamlit treating $ amounts as LaTeX math."""
+    safe = re.sub(r"(?<!\\)\$", r"\\$", str(text or ""))
+    st.markdown(safe)
+
+
+st.set_page_config(page_title="dollar_watch V3.4.5", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -98,7 +105,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.1")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.5")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -207,7 +214,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.1 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.5 Roadmap"
 ])
 
 with exec_tab:
@@ -247,9 +254,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.4.1 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.5 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.1 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.5 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -349,6 +356,12 @@ with financing_tab:
         top[3].metric("Banks + credit unions","—" if ba is None else f"{ba:.1f}%")
         top[4].metric("Foreign absorption","—" if foreign is None else f"{foreign:.1f}%")
         top[5].metric("Dealer net absorption","—" if dealer is None else f"{dealer:.1f}%")
+        expected_q=tf.get("expected_latest_quarter"); next_q=tf.get("next_expected_quarter"); next_rel=tf.get("next_release_date")
+        rel_lag=tf.get("release_lag_quarters")
+        if tf.get("data_timeliness") == "LATEST_EXPECTED_RELEASE":
+            st.info(f"Z.1 timeliness: latest expected official release ({tf.get('as_of_quarter','?')}); historical quarterly reading, not current-quarter financing. Next expected {next_q or 'quarter'} release: {next_rel or 'TBD'}.")
+        elif rel_lag is not None:
+            st.warning(f"Z.1 timeliness: {tf.get('data_timeliness','UNKNOWN')} ({rel_lag} expected release(s) behind).")
         st.caption(f"Latest common Z.1 quarter: {tf.get('as_of_quarter','?')} | Net marketable issuance: {fmt_money((tf.get('issuance_saar_mn') or 0)*1e6)} SAAR | Timeliness: {tf.get('data_timeliness','UNKNOWN')}. Negative holder shares are preserved rather than clamped to zero.")
         if cls.get("reason"):
             (st.error if cls.get("state")=="RED" else st.warning if cls.get("state") in {"ORANGE","YELLOW"} else st.success)(cls.get("reason"))
@@ -383,6 +396,11 @@ with financing_tab:
             rc[0].metric("Dealer gross repo balance sheet","—" if gross is None else f"${gross:,.0f}B")
             rc[1].metric("Dealer net repo borrowing","—" if netb is None else f"${netb:+,.0f}B")
             rc[2].metric("MMF repo assets","—" if mmfr is None else f"${mmfr:,.0f}B")
+            hf_tsy=funding.get("hedge_fund_treasury_holdings_bn"); hf_liab=funding.get("hedge_fund_domestic_repo_liabilities_bn"); hf_ratio=funding.get("hedge_fund_domestic_repo_to_treasury_pct")
+            hfc=st.columns(3)
+            hfc[0].metric("Hedge-fund Treasury holdings","—" if hf_tsy is None else f"${hf_tsy:,.0f}B")
+            hfc[1].metric("HF domestic repo liabilities","—" if hf_liab is None else f"${hf_liab:,.0f}B")
+            hfc[2].metric("Domestic repo / Treasury proxy","—" if hf_ratio is None else f"{hf_ratio:.1f}%")
             st.caption(str(funding.get("note","")))
             rpdf=pd.DataFrame(funding.get("rows",[]) or [])
             if not rpdf.empty:
@@ -391,9 +409,26 @@ with financing_tab:
         hist=pd.DataFrame(tf.get("history",[]) or [])
         if not hist.empty:
             hist["date"]=pd.to_datetime(hist["date"],errors="coerce")
-            hcols=[x for x in ["monetary_capable_share_pct","fed_share_pct","bank_share_pct","dealer_share_pct","foreign_share_pct","mmf_share_pct"] if x in hist.columns]
+            hcols=[x for x in ["monetary_capable_share_pct","fed_share_pct","bank_share_pct","dealer_share_pct","foreign_share_pct","mmf_share_pct","hedge_fund_share_pct"] if x in hist.columns]
             st.subheader("Financing mix history")
-            st.plotly_chart(px.line(hist.tail(80),x="date",y=hcols,markers=False,title="Share of net marketable Treasury issuance — Z.1 SAAR"),width="stretch")
+            # Historical snapshots can span schema/app versions. JSON round-trips may leave
+            # some holder-share columns as object/string while newer columns are numeric.
+            # Plotly Express wide-form requires every y column to share a compatible dtype,
+            # so normalize only the chart copy and use long form. Stored history is untouched.
+            plot_hist=hist.tail(80).copy()
+            for c in hcols:
+                plot_hist[c]=pd.to_numeric(plot_hist[c],errors="coerce")
+            usable=[c for c in hcols if plot_hist[c].notna().any()]
+            if usable:
+                plot_long=(plot_hist[["date",*usable]]
+                           .melt(id_vars="date",value_vars=usable,var_name="series",value_name="share_pct")
+                           .dropna(subset=["date","share_pct"]))
+                if not plot_long.empty:
+                    st.plotly_chart(px.line(plot_long,x="date",y="share_pct",color="series",markers=False,title="Share of net marketable Treasury issuance — Z.1 SAAR"),width="stretch")
+                else:
+                    st.info("Financing history exists, but no numeric observations are currently plottable.")
+            else:
+                st.info("Financing history exists, but no numeric holder-share series are currently plottable.")
             st.caption("Shares can exceed 100% or be negative because some sectors are net sellers while others absorb more than the net issuance. This is expected flow-of-funds accounting, not a chart error.")
 
         st.subheader("SLR / bank-balance-sheet capacity")
@@ -408,8 +443,12 @@ with financing_tab:
         if slrt.get("status"):
             st.warning(f"SLR transmission test: {slrt.get('status')} — {slrt.get('reason','')}")
         slr_bn=money.get("bank_treasury_agency_since_slr_bn"); slr_pct=money.get("bank_treasury_agency_since_slr_pct")
+        eslr_q=tf.get("eslr_relevant_bank_proxy_absorption_pct")
+        if eslr_q is not None:
+            st.caption(f"Quarterly eSLR-channel proxy: U.S.-chartered depository Treasury absorption {eslr_q:.1f}% of issuance. This is still broader than the covered GSIB population; foreign banking offices and credit unions are excluded from this proxy.")
         if slr_bn is not None:
-            st.caption(f"H.8 proxy since Apr. 1, 2026: bank Treasury+agency securities {slr_bn:+.1f}B ({slr_pct:+.1f}% if available). This includes agencies and is correlation/proxy evidence only, not proof the eSLR rule caused Treasury buying.")
+            pct_txt="n/a" if slr_pct is None else f"{slr_pct:+.1f}%"
+            st.caption(f"H.8 proxy since Apr. 1, 2026: bank Treasury+agency securities {slr_bn:+.1f}B ({pct_txt}). This includes agencies and is correlation/proxy evidence only, not proof the eSLR rule caused Treasury buying.")
         if slr.get("scope_note"): st.caption(str(slr.get("scope_note")))
 
         with st.expander("Detailed Z.1 sectors"):
@@ -419,6 +458,11 @@ with financing_tab:
                 detail["Share of issuance %"]=pd.to_numeric(detail["share_of_issuance_pct"],errors="coerce")
                 st.dataframe(detail[["sector","Flow (SAAR $B)","Share of issuance %"]].round(2),width="stretch",hide_index=True)
             st.caption(f"Holder-series coverage: {tf.get('holder_series_ok','?')}/{tf.get('holder_series_total','?')} ({tf.get('holder_coverage_pct',0):.0f}%).")
+            opt=tf.get("optional_holder_series",{}) or {}
+            if opt.get("available"):
+                st.caption("Optional post-Q2 holder series active: "+", ".join(opt.get("available") or []))
+            elif opt.get("errors"):
+                st.caption("Post-Q2 hedge-fund transaction row is expected by the new Z.1 schema but its FRED transaction series is not yet available; it is not counted as a zero or substituted from market-value holdings.")
 
         with st.expander("Methodology / double-counting guardrails"):
             st.json(tf.get("methodology",{}))
@@ -440,8 +484,13 @@ with flows_tab:
     if unwind:
         uc=st.columns(3)
         uc[0].metric("Observed CFTC unwind",str(unwind.get("status","UNCONFIRMED")))
-        uc[1].metric("Latest CFTC report",str(unwind.get("latest_cftc_report_date") or "n/a"))
+        uc[1].metric("Latest CFTC position as-of",str(unwind.get("latest_position_asof_date") or unwind.get("latest_cftc_report_date") or "n/a"))
         uc[2].metric("Covering signals",len(unwind.get("foreign_short_covering_signals",[]) or []))
+        latest_pub=unwind.get("latest_expected_publication_date")
+        next_asof=unwind.get("next_position_asof_date")
+        next_pub=unwind.get("next_expected_publication_date") or unwind.get("expected_publication_date")
+        if latest_pub or next_asof or next_pub:
+            st.caption(f"Latest position expected publication: {latest_pub or 'n/a'}; next position as-of: {next_asof or 'n/a'}; next expected COT publication: {next_pub or 'n/a'} (holiday shifts possible). Lifecycle: {unwind.get('release_lifecycle','UNKNOWN')}.")
         st.caption("Spot FX can be consistent with short-covering without proving positions actually shrank. Only newer CFTC report-over-report position data can confirm an observed unwind.")
     if bundle.get("cftc_summary",pd.DataFrame()).empty: st.warning("CFTC feed unavailable.")
     else: st.dataframe(bundle["cftc_summary"].round(2),width="stretch",hide_index=True)
@@ -715,7 +764,7 @@ with portfolio_tab:
 
 with analysis_tab:
     st.subheader("Deterministic analysis")
-    st.markdown(deterministic_analysis(scores,portfolio_df,news_class,prev))
+    render_generated_markdown(deterministic_analysis(scores,portfolio_df,news_class,prev))
 
     st.subheader("Confidence weighting BEFORE regime math")
     cad=pd.DataFrame([{"Indicator":k,**v} for k,v in scores.get("confidence_adjustments",{}).items()])
@@ -754,7 +803,7 @@ with analysis_tab:
                 "headlines_discovery_only":news_df.head(50).to_dict(orient="records") if not news_df.empty else [],
             }
             try:
-                text=analyze_with_local_llm(payload,base_url=lm_url,model=lm_model or None,timeout_seconds=int(lm_timeout)); st.markdown(text)
+                text=analyze_with_local_llm(payload,base_url=lm_url,model=lm_model or None,timeout_seconds=int(lm_timeout)); render_generated_markdown(text)
             except Exception as exc: st.error(f"Local LLM call failed: {exc}")
 
 with hist_tab:

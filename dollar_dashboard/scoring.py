@@ -4,6 +4,8 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+import pandas as pd
+
 from .evidence import effective_evidence_value
 
 
@@ -278,13 +280,42 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         observed_unwind_status="PARTIAL"
     else:
         observed_unwind_status="UNCONFIRMED"
+    latest_expected_cftc_publication = next_cftc_asof = next_expected_cftc_publication = None
+    cftc_release_lifecycle = "UNKNOWN"
+    if latest_cftc_report:
+        try:
+            _rd = pd.Timestamp(latest_cftc_report)
+            # COT position data are Tuesday as-of observations and are generally published Friday.
+            # Holiday weeks can shift publication, so all publication dates are explicitly EXPECTED.
+            latest_expected_cftc_publication = str((_rd + pd.Timedelta(days=3)).date())
+            next_cftc_asof = str((_rd + pd.Timedelta(days=7)).date())
+            next_expected_cftc_publication = str((_rd + pd.Timedelta(days=10)).date())
+            _today = pd.Timestamp.now(tz="UTC").date()
+            _latest_pub = (_rd + pd.Timedelta(days=3)).date()
+            _next_asof = (_rd + pd.Timedelta(days=7)).date()
+            if _today < _latest_pub:
+                cftc_release_lifecycle = "LATEST_POSITION_AWAITING_EXPECTED_PUBLICATION"
+            elif _today < _next_asof:
+                cftc_release_lifecycle = "LATEST_POSITION_EXPECTED_PUBLISHED_NEXT_ASOF_PENDING"
+            else:
+                cftc_release_lifecycle = "NEXT_POSITION_WINDOW_REACHED_OR_PASSED"
+        except Exception:
+            pass
     observed_position_unwind={
         "status":observed_unwind_status,
+        # Backward-compatible name retained for saved-history consumers. This is an AS-OF date.
         "latest_cftc_report_date":latest_cftc_report,
+        "latest_position_asof_date":latest_cftc_report,
+        "latest_expected_publication_date":latest_expected_cftc_publication,
         "report_age_days":None if cftc_report_age_days is None else round(cftc_report_age_days,1),
+        "next_position_asof_date":next_cftc_asof,
+        "next_expected_publication_date":next_expected_cftc_publication,
+        # Backward-compatible alias: historically this represented the NEXT expected public release.
+        "expected_publication_date":next_expected_cftc_publication,
+        "release_lifecycle":cftc_release_lifecycle,
         "foreign_short_covering_signals":foreign_cover_signals,
         "dxy_long_liquidation_observed":bool(dxy_liquidation),
-        "note":"Spot moves can be consistent with short-covering, but CONFIRMED requires newer CFTC report-over-report shrinkage in at least two crowded foreign-currency shorts.",
+        "note":"CFTC report_date is the Tuesday position-as-of date, not the public release date. The latest expected publication is normally Friday (+3 days); the next position as-of is normally the following Tuesday (+7) and its expected publication the following Friday (+10). Holiday shifts are possible. Spot moves can be consistent with short-covering, but CONFIRMED requires newer report-over-report shrinkage in at least two crowded foreign-currency shorts.",
     }
 
     tic_pressure = _eff(tic_raw, tic_conf)
@@ -590,6 +621,14 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "offshore_funding_coverage": round(offshore_funding_coverage,1),
         "offshore_gap": snapshot.get("offshore_usd_funding_meta",{}).get("reason",""),
     })
+    _domestic_funding_cov = round(_clamp(0.90*fred_conf*100 + 0.10*market_conf*100),1)
+    funding_observation_scope = {
+        "status": "PARTIAL_OFFSHORE" if offshore_funding_coverage < 70 else "BROAD",
+        "domestic_coverage_pct": _domestic_funding_cov,
+        "offshore_coverage_pct": round(offshore_funding_coverage,1),
+        "safe_label": "Observed domestic funding indicators calm; offshore confirmation incomplete" if offshore_funding_coverage < 70 else "Observed funding indicators broadly covered",
+        "language_rule": "Do not describe global dollar funding as benign/clean when offshore coverage is below 70%. State that observed domestic indicators do not confirm stress and name the offshore cross-currency-basis/FX-swap gap." if offshore_funding_coverage < 70 else "Broad funding language is permitted subject to individual source freshness.",
+    }
 
     return {
         "regimes": regimes,
@@ -624,6 +663,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "approved_policy_evidence": approved_evidence_rows,
         "deterministic_verified_evidence": deterministic_evidence_rows,
         "observed_position_unwind": observed_position_unwind,
+        "funding_observation_scope": funding_observation_scope,
         "policy_evidence_model": {
             "DETERMINISTIC_VERIFIED":"Exact official facts that pass domain-specific deterministic validation. Automatically admissible for coverage and tightly bounded mechanical scoring; no motive inference.",
             "HUMAN_APPROVED_INTERPRETATION":"Source-relevant SUPPORTED interpretive claims explicitly approved by the user. Eligible for the full bounded intent/motive-sensitive effect.",
