@@ -15,9 +15,9 @@ from urllib.parse import urljoin
 import requests
 
 UA_VARIANTS=[
-    {"User-Agent":"dollar_watch/3.3 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
+    {"User-Agent":"dollar_watch/3.3.1 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
     {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36","Accept-Language":"en-US,en;q=0.9"},
-    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.3; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
+    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.3.1; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
 ]
 UA=UA_VARIANTS[0]
 
@@ -433,23 +433,43 @@ def fetch_nyfed_basis_validation(timeout:int=15)->dict:
             "lagged_validation_only":True,"interpretation_guard":"Official quarterly FX-swap basis context validates regime direction only; it is too stale for a live funding trigger."}
 
 
+def _deterministic_statement_match(text:str, required_groups:tuple[tuple[str,...],...])->tuple[bool,list[str]]:
+    """Deterministically validate that an exact official page actually contains the factual anchors.
+
+    Each group is OR-within / AND-across. This is intentionally narrower than LLM interpretation: it
+    establishes that the agency made the quoted factual statement, not what motive should be inferred.
+    """
+    hay=_normalize_japanese_numeric(text or '').lower()
+    missing=[]
+    for group in required_groups:
+        if not any(str(term).lower() in hay for term in group):
+            missing.append(' | '.join(group))
+    return (not missing),missing
+
+
 def fetch_exact_policy_statements(timeout:int=12)->list[dict]:
     specs=[
-      ("Bilateral FX policy",TREASURY_BESSENT_UEDA,"Treasury publicly supported Japan's steps addressing substantial undervaluation of the yen and emphasized avoiding excessive exchange-rate volatility.","fx_positioning_squeeze",1,8.0,"BILATERAL_FX_POLICY",TREASURY_READOUTS,("Bessent","Ueda")),
-      ("Bilateral FX policy",MOF_US_JAPAN_20260831,"Japan and U.S. finance ministers reaffirmed that an orderly yen market is important to global financial stability and that continued joint efforts support that objective.","fx_positioning_squeeze",1,6.0,"BILATERAL_FX_POLICY",None,()),
-      ("Stablecoins",TREASURY_GENIUS_20260817,"Treasury publicly frames payment-stablecoin policy as supporting the U.S. dollar's international or reserve-currency role.","structural_dollar_support",1,6.0,"STRUCTURAL_DOLLAR_SUPPORT",None,()),
-      ("FX intervention",NYFED_Q2_2026_FX,"The Federal Reserve and U.S. Treasury did not intervene in foreign-exchange markets during the second quarter of 2026.","managed_devaluation",-1,4.0,"US_DIRECT_FX_INTERVENTION",NYFED_FX_QUARTERS,("Second Quarter","Intervene")),
+      ("Bilateral FX policy",TREASURY_BESSENT_UEDA,"Treasury publicly supported Japan's steps addressing substantial undervaluation of the yen and emphasized avoiding excessive exchange-rate volatility.","fx_positioning_squeeze",1,8.0,"BILATERAL_FX_POLICY",TREASURY_READOUTS,("Bessent","Ueda"),(("yen",),("undervaluation",),("volatility",))),
+      ("Bilateral FX policy",MOF_US_JAPAN_20260831,"Japan and U.S. finance ministers reaffirmed that an orderly yen market is important to global financial stability and that continued joint efforts support that objective.","fx_positioning_squeeze",1,6.0,"BILATERAL_FX_POLICY",None,(),(("yen",),("orderly",),("financial stability","global financial"))),
+      ("Stablecoins",TREASURY_GENIUS_20260817,"Treasury publicly frames payment-stablecoin policy as supporting the U.S. dollar's international or reserve-currency role.","structural_dollar_support",1,6.0,"STRUCTURAL_DOLLAR_SUPPORT",None,(),(("stablecoin",),("reserve currency","reserve-currency","reserve role","reserve-currency role"))),
+      ("FX intervention",NYFED_Q2_2026_FX,"The Federal Reserve and U.S. Treasury did not intervene in foreign-exchange markets during the second quarter of 2026.","managed_devaluation",-1,4.0,"US_DIRECT_FX_INTERVENTION",NYFED_FX_QUARTERS,("Second Quarter","Intervene"),(("did not intervene","no intervention"),("second quarter","april","june"))),
     ]
     out=[]
-    for bucket,url,claim,target,direction,weight,action_class,index_url,terms in specs:
+    for bucket,url,claim,target,direction,weight,action_class,index_url,terms,required_groups in specs:
         fetched=_fetch_html_with_fallback(url,timeout,index_url=index_url,anchor_terms=terms)
         row={"bucket":bucket,"source_url":url,"claim":claim,"effect_target":target,"effect_direction":direction,
              "effect_weight":weight,"action_class":action_class,"source_tier":"PRIMARY","reachable":bool(fetched.get('ok')),
              "live_reachable":bool(fetched.get('live_reachable')),"fetch_mode":fetched.get('fetch_mode')}
         if fetched.get('ok'):
-            row.update({"final_url":fetched.get('final_url') or url,"title_text":fetched.get('text','')[:500],
-                        "fetched_at":datetime.now(timezone.utc).isoformat(),"cache_kind":fetched.get('cache_kind'),"cached_at":fetched.get('cached_at')})
+            body=fetched.get('text','')
+            valid,missing=_deterministic_statement_match(body,required_groups)
+            row.update({"final_url":fetched.get('final_url') or url,"title_text":body[:500],
+                        "fetched_at":datetime.now(timezone.utc).isoformat(),"cache_kind":fetched.get('cache_kind'),"cached_at":fetched.get('cached_at'),
+                        "deterministic_verified":bool(valid),"evidence_class":"DETERMINISTIC_VERIFIED" if valid else "SOURCE_ONLY",
+                        "deterministic_validation":"PASS" if valid else "FAILED_ANCHORS",
+                        "deterministic_missing_anchors":missing})
         else:
+            row.update({"deterministic_verified":False,"evidence_class":"MISSING","deterministic_validation":"UNREACHABLE"})
             row['error']='; '.join(fetched.get('errors',[]) or ['unreachable'])[-900:]
         out.append(row)
     return out
@@ -478,10 +498,12 @@ def canonical_verification_leads(bundle:dict|None=None)->list[dict]:
           "relevance_status":"RELEVANT","status":"STRUCTURED_VERIFIED","structured_fact":True})
     for s in b.get('canonical_statements') or []:
         if not s.get('reachable'): continue
+        det=bool(s.get('deterministic_verified'))
         rows.append({"priority":"P0" if s.get('bucket') in {'FX intervention','Bilateral FX policy','Treasury / Bessent'} else "P1",
           "bucket":s.get('bucket'),"claim":s.get('claim'),"source":"CANONICAL OFFICIAL SOURCE","link":s.get('final_url') or s.get('source_url'),
-          "preferred_verification_source":s.get('final_url') or s.get('source_url'),"verification_status":"UNVERIFIED","integrity_status":"COMPLETE",
+          "preferred_verification_source":s.get('final_url') or s.get('source_url'),
+          "verification_status":"DETERMINISTIC_VERIFIED" if det else "UNVERIFIED","integrity_status":"COMPLETE",
           "effect_target":s.get('effect_target'),"effect_direction":s.get('effect_direction'),"effect_weight":s.get('effect_weight'),"action_class":s.get('action_class'),
           "candidate_url":s.get('final_url') or s.get('source_url'),"candidate_tier":"PRIMARY","candidate_relevance":100.0,"relevance_status":"RELEVANT",
-          "status":"SOURCE_FOUND","structured_fact":False,"source_fetch_mode":s.get('fetch_mode'),"source_live_reachable":s.get('live_reachable')})
+          "status":"STRUCTURED_VERIFIED" if det else "SOURCE_FOUND","structured_fact":det,"source_fetch_mode":s.get('fetch_mode'),"source_live_reachable":s.get('live_reachable')})
     return rows

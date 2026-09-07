@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V3.3", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.3.1", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -98,7 +98,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.3")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.3.1")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -133,7 +133,7 @@ news_class=classify_news(news_df)
 verification_queue_now=build_verification_queue(news_df,30)
 if not verification_queue_now.empty:
     upsert_verification_queue(verification_queue_now.to_dict(orient="records"))
-# V3.3: standing policy probes ensure the research funnel does not go dark when Google News/RSS
+# V3.3.1: standing policy probes ensure the research funnel does not go dark when Google News/RSS
 # is unavailable or has no qualifying headlines. These are propositions to test, never factual
 # evidence, and enter the same relevance -> LLM -> human-approval gate as headline claims.
 standing_policy_probe_rows=systematic_policy_leads(max_rows=10)
@@ -207,7 +207,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.3 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.3.1 Roadmap"
 ])
 
 with exec_tab:
@@ -247,9 +247,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.3 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.3.1 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.3 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.3.1 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -336,6 +336,13 @@ with flows_tab:
     cc[0].metric("Fundamental USD-downside positioning",f"{bundle.get('cftc_pressure',0):.0f}/100")
     cc[1].metric("Crowded foreign-FX short squeeze risk",f"{bundle.get('fx_positioning_squeeze',0):.0f}/100")
     if bundle.get("fx_positioning_squeeze_reasons"): st.write("**Squeeze drivers:** "+"; ".join(bundle["fx_positioning_squeeze_reasons"]))
+    unwind=scores.get("observed_position_unwind",{}) or {}
+    if unwind:
+        uc=st.columns(3)
+        uc[0].metric("Observed CFTC unwind",str(unwind.get("status","UNCONFIRMED")))
+        uc[1].metric("Latest CFTC report",str(unwind.get("latest_cftc_report_date") or "n/a"))
+        uc[2].metric("Covering signals",len(unwind.get("foreign_short_covering_signals",[]) or []))
+        st.caption("Spot FX can be consistent with short-covering without proving positions actually shrank. Only newer CFTC report-over-report position data can confirm an observed unwind.")
     if bundle.get("cftc_summary",pd.DataFrame()).empty: st.warning("CFTC feed unavailable.")
     else: st.dataframe(bundle["cftc_summary"].round(2),width="stretch",hide_index=True)
 
@@ -396,15 +403,21 @@ with policy_tab:
     canon=pd.DataFrame(op.get("canonical_statements",[]) or [])
     if not canon.empty:
         st.write("**Canonical nuanced-policy sources seeded into the verification workflow**")
-        ccols=[c for c in ["bucket","claim","action_class","effect_target","reachable","live_reachable","fetch_mode","source_url"] if c in canon.columns]
+        ccols=[c for c in ["bucket","claim","action_class","effect_target","deterministic_verified","deterministic_validation","reachable","live_reachable","fetch_mode","source_url"] if c in canon.columns]
         st.dataframe(canon[ccols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("official source")})
+    det_now=pd.DataFrame(scores.get("deterministic_verified_evidence",[]) or [])
+    if not det_now.empty:
+        st.write("**Deterministic verified official facts — automatically admissible**")
+        st.caption("These exact official facts may raise evidence coverage and receive only a tightly bounded mechanical score effect. They do not establish motive. Interpretive intent/motive claims remain human-approved below.")
+        dcols=[c for c in ["bucket","claim","action_class","effect_target","score_contribution","fetch_mode","source_url"] if c in det_now.columns]
+        st.dataframe(det_now[dcols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("official source")})
     tax=scores.get("policy_action_taxonomy",{}) or {}
     if tax:
         with st.expander("Policy-evidence action taxonomy"):
             st.dataframe(pd.DataFrame([{"Action class":k,"Engine meaning":v} for k,v in tax.items()]),width="stretch",hide_index=True)
 
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V3.3 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V3.3.1 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -478,10 +491,10 @@ with policy_tab:
     if events: st.dataframe(pd.DataFrame(events),width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source_url")})
 
     st.subheader("Automatic verification queue")
-    st.caption("Headlines plus bounded standing policy probes are converted into narrow claims-to-check and routed to policy-relevant official surfaces before semantic ranking. They remain non-scoring until source relevance + LLM support + explicit human approval are all present.")
+    st.caption("Headlines and interpretive standing probes remain non-scoring until source relevance + LLM support + explicit human approval are present. Exact canonical official facts that pass deterministic anchor validation are shown separately above and may affect coverage / tightly bounded mechanical scoring without a human motive judgment.")
     approved_now=pd.DataFrame(snapshot.get("approved_verification_evidence",[]) or [])
     if not approved_now.empty:
-        st.write("**Approved primary-source evidence currently eligible for bounded scoring**")
+        st.write("**Human-approved interpretive evidence currently eligible for full bounded scoring**")
         acols=[c for c in ["bucket","claim","effect_target","effect_direction","effect_weight","source_url","verdict"] if c in approved_now.columns]
         st.dataframe(approved_now[acols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source")})
     verification_queue=build_verification_queue(news_df,30)
@@ -493,7 +506,7 @@ with policy_tab:
         quarantined_checks=pd.DataFrame(recent_quarantined_verification_checks(100))
         if not quarantined_checks.empty:
             with st.expander(f"Quarantined legacy/source-mismatch checks ({len(quarantined_checks)})"):
-                st.caption("V3.3 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
+                st.caption("V3.3.1 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
                 qcols=[c for c in ["created_at","claim","source_url","verdict","relevance_status","quarantine_reason"] if c in quarantined_checks.columns]
                 st.dataframe(quarantined_checks[qcols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source")})
         reviewable=persisted_queue[persisted_queue["status"].isin(["CHECKED","IRRELEVANT_SOURCE"])] if "status" in persisted_queue.columns else pd.DataFrame()
@@ -517,7 +530,7 @@ with policy_tab:
             if cc.button("Mark disputed",key=f"dispute_check_{qid}",width="stretch"):
                 update_verification_queue_approval(int(qid),"DISPUTED"); st.success("Check marked disputed.")
     if verification_queue.empty:
-        st.info("No headline claims are available right now. V3.3 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
+        st.info("No headline claims are available right now. V3.3.1 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
     else:
         st.dataframe(verification_queue,width="stretch",hide_index=True,column_config={"link":st.column_config.LinkColumn("headline link")})
         selected_claim=st.selectbox("Load a queued claim into the verifier",verification_queue["claim"].tolist(),key="queued_claim_select")
@@ -534,7 +547,7 @@ with policy_tab:
             show=pd.DataFrame(candidates)
             show_cols=[c for c in ["name","source_tier","route_reason","relevance_status","relevance_score","claim_overlap_ratio","bucket_anchor_overlap","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
             st.dataframe(show[show_cols],width="stretch",hide_index=True,column_config={"final_url":st.column_config.LinkColumn("primary source")})
-            st.caption("Discovery is not verification. V3.3 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
+            st.caption("Discovery is not verification. V3.3.1 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
             if st.button("LLM-check top primary candidates",width="stretch"):
                 if not lm_url:
                     st.error("Configure the local LLM base URL first.")
@@ -542,7 +555,7 @@ with policy_tab:
                     checked=0
                     relevant_candidates=[x for x in candidates if x.get("reachable") and x.get("relevance_status")=="RELEVANT"]
                     if not relevant_candidates:
-                        st.warning("No candidate passed the V3.3 semantic relevance gate; no LLM claim check was run.")
+                        st.warning("No candidate passed the V3.3.1 semantic relevance gate; no LLM claim check was run.")
                     for c in relevant_candidates[:3]:
                         fetched=fetch_source_text(c.get("final_url") or c.get("url"),max_chars=30000,timeout=12)
                         if not fetched.get("ok"): continue
@@ -688,7 +701,7 @@ with health_tab:
         if lagged.get("ok"):
             st.info(f"Lagged NY Fed official validation ({lagged.get('period','?')}): offshore dollar funding = {lagged.get('status','UNKNOWN')}; basis characterization = {lagged.get('basis_characterization','UNKNOWN')}. This is quarterly context only and does not raise live coverage or fire a funding trigger.")
     st.markdown("""
-### V3.3 evidence rules
+### V3.3.1 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.
@@ -698,8 +711,10 @@ with health_tab:
 - **Future-dated observations are hygiene warnings.** They are not treated as extra-fresh data and are confidence-discounted.
 - **RWA tokens are not stablecoins.** Yield-accumulating tokenized Treasury products are separated before $1 peg tests.
 - **Repo tail ≠ median funding stress.** SOFR99-IORB has its own percentile/persistence trigger and is never described as distance to the median SOFR-IORB threshold.
-- **Domestic funding coverage ≠ global funding coverage.** V3.3 adds a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
+- **Domestic funding coverage ≠ global funding coverage.** V3.3.1 adds a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
 - **Proxy ≠ basis.** CME/Yahoo front-futures dislocation is anomaly context only and must never be described as covered-interest-parity or cross-currency basis.
+- **Fact ≠ interpretation.** Deterministically validated official facts may raise coverage and receive only bounded mechanical effects; motive/intent interpretations remain human-approved.
+- **Spot ≠ observed unwind.** FX price action may be consistent with short-covering, but CFTC positions are called CONFIRMED unwinding only when newer report-over-report positioning actually shrinks in multiple crowded foreign-currency shorts.
 - **Unknown ≠ absent.** When critical regime coverage is below 50%, narrative output must use unverified/unknown/insufficient-evidence language rather than asserting the factor is absent.
 """)
 

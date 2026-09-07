@@ -1,7 +1,18 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.3
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.3.1
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
+## V3.3.1 evidence-semantics patch / production baseline
+
+V3.3.1 does not change the six-regime architecture. It closes two semantic gaps found in the V3.3 live red-team run:
+
+- **Spot confirmation is not observed position unwind.** FX price action may strengthen the FX-positioning-squeeze score, but the dashboard now exposes `observed_position_unwind` separately. `CONFIRMED` requires newer CFTC report-over-report shrinkage in at least two crowded foreign-currency shorts; otherwise the narrative must say spot action is only *consistent with* short-covering.
+- **Deterministic facts are distinct from interpretations.** Exact canonical official statements must pass source-specific anchor validation before becoming `DETERMINISTIC_VERIFIED`. Those facts can automatically increase evidence coverage and receive only a 25%-scaled mechanical effect. Motive/intent interpretations remain `HUMAN_APPROVED_INTERPRETATION` and retain the full bounded score effect only after source relevance, LLM support, and explicit approval.
+- **Managed-devaluation coverage is more honest.** Direct U.S. intervention facts, bilateral FX-policy facts, and structural-dollar-support facts can raise critical coverage automatically, but broad weak-dollar intent remains human-gated. With current deterministic context alone the design intentionally remains below the 50% broad-intent language gate.
+- **Canonical facts no longer need redundant LLM verification.** Deterministically validated exact-source rows enter the queue as `STRUCTURED_VERIFIED`; interpretive claims continue through the LLM/human review workflow.
+- **Audit UI added.** The Policy/Evidence tab shows deterministic score-eligible facts separately from approved interpretations; the Positioning tab shows the observed CFTC unwind state and report date.
+
+See `CHANGELOG_V3_3_1.md` and `test_v331.py`.
 
 
 

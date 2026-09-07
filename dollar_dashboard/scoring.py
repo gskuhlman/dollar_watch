@@ -87,8 +87,13 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     n = news_classification.get("scores", {})
     ov, override_audit = _verified_overrides(overrides)
 
+    # Two-tier policy evidence:
+    #   1) DETERMINISTIC_VERIFIED = exact official facts that pass source-specific anchor checks.
+    #      These may raise coverage automatically and have only a tightly bounded mechanical effect.
+    #   2) HUMAN_APPROVED_INTERPRETATION = source-relevant SUPPORTED claims explicitly approved by
+    #      the user. These retain the full bounded effect for intent/motive-sensitive scoring.
     approved_policy_evidence = snapshot.get("approved_verification_evidence", []) or []
-    evidence_target_net = {}
+    human_target_net = {}
     approved_evidence_rows = []
     for ev in approved_policy_evidence:
         target=str(ev.get("effect_target") or "")
@@ -97,19 +102,46 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         except Exception:
             continue
         contribution=max(-12.0,min(12.0,direction*weight))
-        evidence_target_net[target]=evidence_target_net.get(target,0.0)+contribution
-        approved_evidence_rows.append({**ev,"score_contribution":round(contribution,1)})
-    policy_evidence_net=max(-20.0,min(25.0,evidence_target_net.get("managed_devaluation",0.0)))
-    fx_policy_evidence_net=max(-10.0,min(15.0,evidence_target_net.get("fx_positioning_squeeze",0.0)))
-    structural_policy_support=max(-10.0,min(15.0,evidence_target_net.get("structural_dollar_support",0.0)))
-    reserve_policy_net=max(-10.0,min(15.0,evidence_target_net.get("reserve_confidence",0.0)))
-    funding_policy_net=max(-10.0,min(15.0,evidence_target_net.get("dollar_funding_squeeze",0.0)))
-    fiscal_policy_net=max(-8.0,min(10.0,evidence_target_net.get("fiscal_treasury",0.0)))
-    policy_evidence_rows=[x for x in approved_evidence_rows if str(x.get("effect_target") or "")=="managed_devaluation"]
+        human_target_net[target]=human_target_net.get(target,0.0)+contribution
+        approved_evidence_rows.append({**ev,"evidence_class":"HUMAN_APPROVED_INTERPRETATION","score_contribution":round(contribution,1)})
 
     official_policy=snapshot.get("official_policy_meta",{}) or {}
     jp_fx=official_policy.get("japan_fx_intervention",{}) or {}
     us_fx=official_policy.get("us_fx_intervention",{}) or {}
+    deterministic_evidence_rows=[]
+    deterministic_target_net={}
+    for ev in official_policy.get("canonical_statements",[]) or []:
+        if not ev.get("deterministic_verified"):
+            continue
+        target=str(ev.get("effect_target") or "")
+        action_class=str(ev.get("action_class") or "")
+        try:
+            direction=float(ev.get("effect_direction") or 0); weight=float(ev.get("effect_weight") or 0)
+        except Exception:
+            direction=weight=0.0
+        # Direct U.S. intervention status is already scored from the structured NY Fed field below;
+        # do not double count the same quarterly fact from its canonical statement row.
+        contribution=0.0 if action_class=="US_DIRECT_FX_INTERVENTION" else max(-4.0,min(4.0,direction*weight*0.25))
+        if contribution:
+            deterministic_target_net[target]=deterministic_target_net.get(target,0.0)+contribution
+        deterministic_evidence_rows.append({
+            "bucket":ev.get("bucket"),"claim":ev.get("claim"),"source_url":ev.get("final_url") or ev.get("source_url"),
+            "source_tier":"PRIMARY","action_class":action_class,"effect_target":target,"effect_direction":direction,
+            "effect_weight":weight,"evidence_class":"DETERMINISTIC_VERIFIED","deterministic_validation":ev.get("deterministic_validation"),
+            "fetch_mode":ev.get("fetch_mode"),"live_reachable":ev.get("live_reachable"),"score_contribution":round(contribution,1),
+        })
+
+    policy_evidence_net=max(-20.0,min(25.0,human_target_net.get("managed_devaluation",0.0)+deterministic_target_net.get("managed_devaluation",0.0)))
+    fx_human_policy_net=max(-10.0,min(15.0,human_target_net.get("fx_positioning_squeeze",0.0)))
+    fx_deterministic_policy_net=max(-5.0,min(5.0,deterministic_target_net.get("fx_positioning_squeeze",0.0)))
+    fx_policy_evidence_net=max(-10.0,min(15.0,fx_human_policy_net+fx_deterministic_policy_net))
+    structural_human_support=max(-10.0,min(15.0,human_target_net.get("structural_dollar_support",0.0)))
+    structural_deterministic_support=max(-4.0,min(4.0,deterministic_target_net.get("structural_dollar_support",0.0)))
+    structural_policy_support=max(-10.0,min(15.0,structural_human_support+structural_deterministic_support))
+    reserve_policy_net=max(-10.0,min(15.0,human_target_net.get("reserve_confidence",0.0)+deterministic_target_net.get("reserve_confidence",0.0)))
+    funding_policy_net=max(-10.0,min(15.0,human_target_net.get("dollar_funding_squeeze",0.0)+deterministic_target_net.get("dollar_funding_squeeze",0.0)))
+    fiscal_policy_net=max(-8.0,min(10.0,human_target_net.get("fiscal_treasury",0.0)+deterministic_target_net.get("fiscal_treasury",0.0)))
+    policy_evidence_rows=[x for x in approved_evidence_rows if str(x.get("effect_target") or "")=="managed_devaluation"]
     japan_fx_catalyst=0.0
     japan_fx_directional=False
     if jp_fx.get("ok") and jp_fx.get("intervention_occurred"):
@@ -127,6 +159,25 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             # Monthly total confirms intervention activity but not currency direction. Small non-directional catalyst only.
             japan_fx_catalyst=2.0 if age_days<=45 else (1.0 if age_days<=90 else 0.0)
     us_direct_fx_counterevidence=-3.0 if us_fx.get("ok") and us_fx.get("finding")=="NO_US_FX_INTERVENTION" else 0.0
+
+    # Structured deterministic facts are auditable separately from interpretive evidence. These
+    # entries mirror mechanical effects already applied above/below and therefore are not re-added.
+    if jp_fx.get("ok") and jp_fx.get("intervention_occurred"):
+        deterministic_evidence_rows.append({
+            "bucket":"FX intervention","claim":f"Japan MOF reported intervention totaling approximately ¥{_safe(jp_fx.get('amount_trillion_yen'),0):.4f} trillion for the stated monthly window.",
+            "source_url":jp_fx.get("source_url"),"source_tier":"PRIMARY","action_class":"BILATERAL_FX_INTERVENTION",
+            "effect_target":"fx_positioning_squeeze","effect_direction":1,"effect_weight":japan_fx_catalyst,
+            "evidence_class":"DETERMINISTIC_VERIFIED","score_contribution":round(japan_fx_catalyst,1),
+            "direction":jp_fx.get("direction","UNKNOWN"),"fetch_mode":jp_fx.get("fetch_mode"),
+        })
+    if us_fx.get("ok") and us_fx.get("finding")=="NO_US_FX_INTERVENTION":
+        deterministic_evidence_rows.append({
+            "bucket":"FX intervention","claim":"NY Fed official reporting found no direct Federal Reserve or U.S. Treasury FX intervention in the current reported quarter.",
+            "source_url":us_fx.get("source_url"),"source_tier":"PRIMARY","action_class":"US_DIRECT_FX_INTERVENTION",
+            "effect_target":"managed_devaluation","effect_direction":-1,"effect_weight":abs(us_direct_fx_counterevidence),
+            "evidence_class":"DETERMINISTIC_VERIFIED","score_contribution":round(us_direct_fx_counterevidence,1),
+            "fetch_mode":us_fx.get("fetch_mode"),
+        })
 
     market_conf = _conf(snapshot, "market")
     fred_conf = _conf(snapshot, "fred")
@@ -190,6 +241,52 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     auction_auto = _eff(auction_raw, auction_conf)
     cftc_pressure = _eff(cftc_raw, cftc_conf)
     fx_squeeze_auto = _eff(fx_squeeze_raw, cftc_conf)
+
+    # Position unwind is an observed CFTC state, separate from spot-price confirmation. Spot FX may
+    # be consistent with short-covering, but only newer report-over-report position data can confirm
+    # that crowded shorts actually shrank.
+    cftc_rows=snapshot.get("cftc_summary",[]) or []
+    foreign_cover_signals=[]
+    dxy_liquidation=False
+    report_dates=[]
+    for row in cftc_rows:
+        market=str(row.get("market") or "")
+        pct=_safe(row.get("leveraged_3y_percentile"),None)
+        net=_safe(row.get("leveraged_net"),None)
+        weekly=_safe(row.get("leveraged_weekly_change"),None)
+        rd=row.get("report_date")
+        if rd: report_dates.append(str(rd)[:10])
+        if market in {"Japanese Yen","Euro FX","Swiss Franc"} and pct is not None and net is not None and weekly is not None:
+            if pct <= 30 and net < 0 and weekly > 0:
+                foreign_cover_signals.append({"market":market,"weekly_change":weekly,"percentile":pct})
+        elif market=="Dollar Index" and pct is not None and net is not None and weekly is not None:
+            if pct >= 70 and net > 0 and weekly < 0:
+                dxy_liquidation=True
+    latest_cftc_report=max(report_dates) if report_dates else None
+    cftc_report_age_days=None
+    if latest_cftc_report:
+        try:
+            rd=datetime.fromisoformat(latest_cftc_report).replace(tzinfo=timezone.utc)
+            cftc_report_age_days=(datetime.now(timezone.utc)-rd).total_seconds()/86400.0
+        except Exception:
+            pass
+    if cftc_report_age_days is not None and cftc_report_age_days > 10:
+        observed_unwind_status="STALE_UNCONFIRMED"
+    elif len(foreign_cover_signals) >= 2:
+        observed_unwind_status="CONFIRMED"
+    elif len(foreign_cover_signals) == 1 or dxy_liquidation:
+        observed_unwind_status="PARTIAL"
+    else:
+        observed_unwind_status="UNCONFIRMED"
+    observed_position_unwind={
+        "status":observed_unwind_status,
+        "latest_cftc_report_date":latest_cftc_report,
+        "report_age_days":None if cftc_report_age_days is None else round(cftc_report_age_days,1),
+        "foreign_short_covering_signals":foreign_cover_signals,
+        "dxy_long_liquidation_observed":bool(dxy_liquidation),
+        "note":"Spot moves can be consistent with short-covering, but CONFIRMED requires newer CFTC report-over-report shrinkage in at least two crowded foreign-currency shorts.",
+    }
+
     tic_pressure = _eff(tic_raw, tic_conf)
     cofer_pressure = _eff(cofer_raw, cofer_conf)
     fiscal_flow = _eff(fiscal_flow_raw, fiscal_conf)
@@ -334,8 +431,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     managed = _clamp(8 + 0.48 * policy_intent + 0.18 * cftc_pressure + 0.25 * confirmation - 0.10 * support)
     if dxy_3m < -0.03: drivers["managed_devaluation"].append("DXY down >3% over ~3 months")
     if cftc_pressure >= 60: drivers["managed_devaluation"].append("CFTC positioning supports broad USD downside")
-    if policy_evidence_net > 0: drivers["managed_devaluation"].append(f"Approved primary-source policy evidence adds {policy_evidence_net:+.0f} points")
-    elif policy_evidence_net < 0: drivers["managed_devaluation"].append(f"Approved primary-source policy evidence subtracts {abs(policy_evidence_net):.0f} points")
+    human_managed=max(-20.0,min(25.0,human_target_net.get("managed_devaluation",0.0)))
+    deterministic_managed=max(-8.0,min(8.0,deterministic_target_net.get("managed_devaluation",0.0)))
+    if human_managed: drivers["managed_devaluation"].append(f"Human-approved interpretive policy evidence contributes {human_managed:+.0f} points")
+    if deterministic_managed: drivers["managed_devaluation"].append(f"Deterministic official policy facts contribute a bounded {deterministic_managed:+.0f} points")
     if policy_intent >= 50: drivers["managed_devaluation"].append("Verified policy-intent evidence is elevated")
 
     fiscal = _clamp(7 + 0.67 * fiscal_supply + 0.12 * institutional + 0.12 * confirmation)
@@ -382,12 +481,19 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             drivers["fx_positioning_squeeze"].append(f"Japan MOF intervention direction confirms yen support; directional catalyst +{japan_fx_catalyst:.0f}")
         else:
             drivers["fx_positioning_squeeze"].append(f"Japan MOF monthly data confirms intervention activity, but direction is unknown; non-directional catalyst +{japan_fx_catalyst:.0f}")
-    if fx_policy_evidence_net>0:
-        drivers["fx_positioning_squeeze"].append(f"Approved bilateral FX-policy evidence adds {fx_policy_evidence_net:+.0f} points")
+    if fx_human_policy_net:
+        drivers["fx_positioning_squeeze"].append(f"Human-approved bilateral FX-policy interpretation contributes {fx_human_policy_net:+.0f} points")
+    if fx_deterministic_policy_net:
+        drivers["fx_positioning_squeeze"].append(f"Deterministic bilateral FX-policy facts contribute a bounded {fx_deterministic_policy_net:+.1f} points")
     if fx_squeeze_auto >= 55:
         drivers["fx_positioning_squeeze"].extend(snapshot.get("fx_positioning_squeeze_reasons", [])[:4])
     if fx_squeeze_auto >= 55 and (jpy_3m < -0.03 or chf_3m < -0.03 or eur_3m > 0.03):
-        drivers["fx_positioning_squeeze"].append("Crowded foreign-currency shorts are unwinding into USD weakness")
+        if observed_unwind_status=="CONFIRMED":
+            drivers["fx_positioning_squeeze"].append("Latest CFTC report confirms shrinkage in multiple crowded foreign-currency shorts while spot moves against USD")
+        elif observed_unwind_status=="PARTIAL":
+            drivers["fx_positioning_squeeze"].append("Spot FX action is consistent with short-covering; latest CFTC shows only partial position-unwind confirmation")
+        else:
+            drivers["fx_positioning_squeeze"].append("Spot FX action is consistent with short-covering, but the latest CFTC report does not yet confirm that crowded shorts actually shrank")
 
     regimes = {
         "Managed dollar devaluation": round(managed, 1),
@@ -440,9 +546,15 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
 
     policy_manual_critical=_verified(["broad_fx_intervention","fed_independence_pressure","capital_control_or_holder_fee_risk"])
     approved_policy_buckets={str(e.get("bucket") or "") for e in policy_evidence_rows}
-    policy_queue_critical=min(75.0,35.0*len(approved_policy_buckets)) if policy_evidence_rows else 0.0
+    policy_queue_critical=min(55.0,35.0*len(approved_policy_buckets)) if policy_evidence_rows else 0.0
     structured_direct_coverage=25.0 if us_fx.get("ok") else 0.0
-    policy_critical=max(policy_manual_critical,min(100.0,policy_queue_critical+structured_direct_coverage),structured_direct_coverage)
+    det_action_classes={str(e.get("action_class") or "") for e in deterministic_evidence_rows}
+    deterministic_policy_context_coverage=0.0
+    if "BILATERAL_FX_POLICY" in det_action_classes: deterministic_policy_context_coverage += 10.0
+    if "STRUCTURAL_DOLLAR_SUPPORT" in det_action_classes: deterministic_policy_context_coverage += 10.0
+    # Objective facts increase what we know, but broad weak-dollar intent remains human-gated; with
+    # no approved intent claim the current deterministic context intentionally stays below 50%.
+    policy_critical=max(policy_manual_critical,min(100.0,structured_direct_coverage+deterministic_policy_context_coverage+policy_queue_critical))
     reserve_policy_critical=_verified(["foreign_official_selling","brics_payment_progress","central_bank_gold_rotation","commodity_dedollarization"])
     generic_coverage = {
         "Managed dollar devaluation": _clamp(0.42*market_conf*100 + 0.20*cftc_conf*100 + 0.18*buyback_schedule_conf*100 + 0.20*news_conf*100),
@@ -467,6 +579,12 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     # devaluation-policy evidence cannot masquerade as ~70% coverage of policy intent.
     regime_coverage = {k: round(_clamp(0.50*generic_coverage[k] + 0.50*critical_coverage[k]),1) for k in generic_coverage}
     regime_coverage_details={k:{"effective":regime_coverage[k],"generic":round(generic_coverage[k],1),"critical":round(critical_coverage[k],1)} for k in regime_coverage}
+    regime_coverage_details["Managed dollar devaluation"].update({
+        "direct_intervention_fact_coverage":round(structured_direct_coverage,1),
+        "deterministic_policy_context_coverage":round(deterministic_policy_context_coverage,1),
+        "human_approved_interpretive_coverage":round(policy_queue_critical,1),
+        "broad_intent_human_gate":True,
+    })
     regime_coverage_details["Dollar funding squeeze"].update({
         "domestic_funding_coverage": round(_clamp(0.90*fred_conf*100 + 0.10*market_conf*100),1),
         "offshore_funding_coverage": round(offshore_funding_coverage,1),
@@ -480,8 +598,12 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "regime_mix_not_probability": mix,
         "components": {
             "Policy intent / intervention": round(policy_intent, 1),
-            "Approved policy evidence net effect": round(policy_evidence_net,1),
+            "Human-approved policy evidence net effect": round(max(-20.0,min(25.0,human_target_net.get("managed_devaluation",0.0))),1),
+            "Deterministic policy evidence net effect": round(max(-8.0,min(8.0,deterministic_target_net.get("managed_devaluation",0.0)))+us_direct_fx_counterevidence,1),
+            "Approved policy evidence net effect": round(policy_evidence_net+us_direct_fx_counterevidence,1),
             "Japan MOF intervention catalyst": round(japan_fx_catalyst,1),
+            "Human-approved bilateral FX-policy catalyst": round(fx_human_policy_net,1),
+            "Deterministic bilateral FX-policy catalyst": round(fx_deterministic_policy_net,1),
             "Approved bilateral FX-policy catalyst": round(fx_policy_evidence_net,1),
             "Approved reserve-policy evidence": round(reserve_policy_net,1),
             "Approved funding-policy evidence": round(funding_policy_net,1),
@@ -500,6 +622,12 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "confidence_adjustments": confidence_audit,
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
         "approved_policy_evidence": approved_evidence_rows,
+        "deterministic_verified_evidence": deterministic_evidence_rows,
+        "observed_position_unwind": observed_position_unwind,
+        "policy_evidence_model": {
+            "DETERMINISTIC_VERIFIED":"Exact official facts that pass domain-specific deterministic validation. Automatically admissible for coverage and tightly bounded mechanical scoring; no motive inference.",
+            "HUMAN_APPROVED_INTERPRETATION":"Source-relevant SUPPORTED interpretive claims explicitly approved by the user. Eligible for the full bounded intent/motive-sensitive effect.",
+        },
         "policy_action_taxonomy": {
             "BROAD_USD_DEVALUATION":"Increase non-USD/devaluation hedge overlay; do not automatically add T-bills.",
             "BROAD_USD_SUPPORT":"Reduce managed-devaluation overlay if corroborated by markets.",

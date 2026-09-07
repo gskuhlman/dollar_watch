@@ -5,6 +5,7 @@ import pandas as pd
 from dollar_dashboard.data import _normalize_auction_frame
 from dollar_dashboard.scoring import score, DEFAULT_OVERRIDES
 from dollar_dashboard.storage import save_snapshot_if_new, recent_snapshots
+from dollar_dashboard.run_history import APP_VERSION
 
 
 def test_completed_auction_filter_logic():
@@ -27,7 +28,7 @@ def test_run_deduplication():
         b,new2=save_snapshot_if_new(payload,payload['timestamp'])
         assert new1 is True and new2 is False and a==b
         rows=recent_snapshots(10)
-        assert len(rows)==1 and rows[0]['_app_version']=='3.3.0'
+        assert len(rows)==1 and rows[0]['_app_version']==APP_VERSION
 
 
 def test_regime_coverage_separate_from_risk():

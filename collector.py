@@ -1,4 +1,4 @@
-"""Headless V3.3 collector for cron / Windows Task Scheduler.
+"""Headless V3.3.1 collector for cron / Windows Task Scheduler.
 
 Fetches all public feeds, scores the six risk regimes, calculates the guarded portfolio,
 saves the snapshot, prints alerts, and optionally POSTs alerts to DOLLAR_DASHBOARD_WEBHOOK.
@@ -29,7 +29,7 @@ def main():
     snap = bundle["snapshot"]
     news_df = bundle.get("news")
     news_class = classify_news(news_df)
-    # V3.3: populate the research funnel even in headless scheduled runs. Standing probes
+    # V3.3.1: populate the research funnel even in headless scheduled runs. Standing probes
     # prevent a dark queue when RSS/news discovery is empty; headline rows are normalized
     # to primary-source verification families before persistence.
     queue_rows = verification_rows_from_news(news_df, max_rows=30) + systematic_policy_leads(max_rows=10) + canonical_verification_leads(bundle.get("official_policy",{}))
@@ -63,7 +63,7 @@ def main():
     }
     rid = save_snapshot(payload, run_kind="SCHEDULED_COLLECTOR")
     save_alerts(alerts)
-    print(f"Saved V3.3 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
+    print(f"Saved V3.3.1 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     for name, val in scores["regimes"].items():
         old = None if not prior else prior.get("scores", {}).get("regimes", {}).get(name)

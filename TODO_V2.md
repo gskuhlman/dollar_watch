@@ -1,5 +1,18 @@
 # dollar_watch roadmap
 
+## V3.3.1 — evidence-semantics production patch completed
+- [x] Separate spot-price confirmation from observed CFTC position unwind.
+- [x] `CONFIRMED` unwind requires newer report-over-report shrinkage in multiple crowded foreign-currency shorts.
+- [x] Add deterministic official-source anchor validation before automatic factual admission.
+- [x] Split evidence into `DETERMINISTIC_VERIFIED` vs `HUMAN_APPROVED_INTERPRETATION`.
+- [x] Allow deterministic facts to raise coverage and receive only tightly bounded mechanical effects.
+- [x] Keep broad managed-devaluation intent human-gated; deterministic context alone remains below the 50% language gate.
+- [x] Skip redundant LLM verification for deterministically validated canonical facts.
+- [x] Add V3.3.1 UI/audit fields and regression coverage.
+
+## Feature freeze after V3.3.1
+Treat V3.3.1 as the production baseline. Next work is calibration, event-performance measurement, false-positive analysis, and source maintenance rather than new regimes or broad architecture.
+
 ## V3.3 — production bug-fix / feature freeze completed
 - [x] English-first Japan MOF monthly intervention ingestion.
 - [x] Validate before caching and purge invalid MOF cached content.
