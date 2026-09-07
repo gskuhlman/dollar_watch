@@ -1,6 +1,10 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.5
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.6
 
-## V3.4.5 semantic/calendar hardening
+## V3.4.6 intervention-asset inference hardening
+
+The red-team layer no longer treats a future confirmation of Japanese yen-buying intervention as proof that Japan sold U.S. Treasuries or disposed of a specific USD asset. Asset/instrument attribution now requires explicit verified evidence.
+
+## V3.4.6 semantic/calendar hardening
 
 - Fixes a silent CFTC-calendar bug: `scoring.py` used `pd.Timestamp` without importing pandas, so derived publication/calendar fields were being swallowed by the existing error guard and returned as null.
 - Separates the CFTC lifecycle into latest position-as-of, latest expected Friday publication, next Tuesday position-as-of, and next expected Friday publication.

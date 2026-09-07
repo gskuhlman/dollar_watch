@@ -35,7 +35,7 @@ def render_generated_markdown(text: str) -> None:
     st.markdown(safe)
 
 
-st.set_page_config(page_title="dollar_watch V3.4.5", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4.6", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -105,7 +105,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.5")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.6")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -214,7 +214,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.5 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.6 Roadmap"
 ])
 
 with exec_tab:
@@ -254,9 +254,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.4.5 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.6 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.5 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.6 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
