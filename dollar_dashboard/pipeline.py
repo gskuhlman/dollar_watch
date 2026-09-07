@@ -21,6 +21,7 @@ from .news import fetch_news
 from .buybacks import fetch_buyback_schedule, summarize_buybacks
 from .fed_policy import classify_fed_treasury_change
 from .official_policy import collect_official_policy_bundle
+from .treasury_financing import fetch_treasury_financing
 
 
 
@@ -69,6 +70,23 @@ def collect_live_bundle() -> dict[str, Any]:
     except Exception as e:
         bundle["fred_hist"] = pd.DataFrame(); bundle["fred_summary"] = pd.DataFrame(); bundle["fed_treasury_classification"] = {"classification":"INSUFFICIENT_DATA","confidence":0.0}
         status["FRED rates / funding"] = {"ok": False, "weight": 1.5, "error": str(e)}
+
+    try:
+        tf_z1, tf_money, tf_funding, tf_meta = fetch_treasury_financing()
+        bundle["treasury_financing_z1"] = tf_z1
+        bundle["treasury_financing_money"] = tf_money
+        bundle["treasury_financing_funding"] = tf_funding
+        bundle["treasury_financing_meta"] = tf_meta
+        status["Treasury financing / Z.1"] = {
+            "ok": bool(tf_meta.get("available")), "weight": 1.15,
+            "last_date": _last_index(tf_z1),
+            "confidence_cap": min(90.0, float(tf_meta.get("holder_coverage_pct", 0.0) or 0.0)),
+            "notes": f"Quarterly Z.1 holder transactions + M2/deposit/H.8 confirmation + repo funding overlay. Holder coverage={tf_meta.get('holder_coverage_pct',0):.0f}%; holder and funding layers are kept separate to prevent double counting.",
+        }
+    except Exception as e:
+        bundle["treasury_financing_z1"] = pd.DataFrame(); bundle["treasury_financing_money"] = pd.DataFrame(); bundle["treasury_financing_funding"] = pd.DataFrame()
+        bundle["treasury_financing_meta"] = {"available":False,"classification":{"state":"UNKNOWN","score":None},"source_errors":{"collector":str(e)}}
+        status["Treasury financing / Z.1"] = {"ok":False,"weight":1.15,"error":str(e),"notes":"Missing financing data is uncertainty, not benign private demand."}
 
     try:
         auctions = fetch_treasury_auctions()
@@ -224,6 +242,7 @@ def collect_live_bundle() -> dict[str, Any]:
     component_confidence = {
         "market": source_confidence.get("Market prices", 0.0),
         "fred": source_confidence.get("FRED rates / funding", 0.0),
+        "treasury_financing": source_confidence.get("Treasury financing / Z.1", 0.0),
         "auction": source_confidence.get("Treasury auctions", 0.0),
         "cftc": source_confidence.get("CFTC FX positioning", 0.0),
         "tic": source_confidence.get("TIC country Treasury holdings", 0.0),
@@ -281,6 +300,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "treasury_buyback_meta": bundle.get("buyback_meta", {}),
         "treasury_buybacks": _records(bundle.get("buybacks", pd.DataFrame())),
         "fed_treasury_classification": bundle.get("fed_treasury_classification", {}),
+        "treasury_financing_meta": bundle.get("treasury_financing_meta", {}),
         "offshore_usd_funding_meta": offshore_funding_meta,
         "official_policy_meta": bundle.get("official_policy", {}),
         "data_confidence": float(confidence),

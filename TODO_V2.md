@@ -1,5 +1,24 @@
 # dollar_watch roadmap
 
+## V3.4 — Treasury financing / bank monetization transmission completed
+- [x] Add quarterly Z.1 net marketable Treasury issuance and holder-flow ingestion.
+- [x] Add monetary-capable absorption = Fed + U.S. banks/credit unions, explicitly not automatic monetization.
+- [x] Add 3-month annualized M2 + commercial-bank-deposit confirmation.
+- [x] Add H.8 bank Treasury+agency holdings as a proxy only, never Treasury-only ownership.
+- [x] Add full major F3.2.t holder map plus Fed/bank/foreign/dealer/MMF financing-share history; preserve negative flows.
+- [x] Add GREEN/YELLOW/ORANGE/RED financing-pressure classifier separate from the six crisis regimes.
+- [x] Add April 1, 2026 eSLR policy state with no Treasury/reserve exemption claim.
+- [x] Separate holder layer from repo/hedge-fund/SLR funding layer to prevent double counting.
+- [x] Add Treasury Financing Streamlit tab, snapshot persistence, LLM semantics, source-health entry and regression tests.
+
+## Next calibration work after V3.4
+- [ ] Backtest financing thresholds around 2008-09, 2011, Sep-2019 repo stress, 2020-21 QE, and 2022-25 QT.
+- [x] Add Z.1 F4.1.s dealer/MMF/bank repo levels as a funding-layer overlay without adding them to holder absorption.
+- [ ] Add direct hedge-fund/basis-trade exposure data when a dependable machine-readable series can be sourced without double counting repo counterparties.
+- [ ] Add GSIB leverage/headroom data when a dependable machine-readable source is available.
+- [ ] Evaluate foreign-replacement and private-demand-displacement trend signals after multiple new Z.1 releases.
+
+
 ## V3.3.1 — evidence-semantics production patch completed
 - [x] Separate spot-price confirmation from observed CFTC position unwind.
 - [x] `CONFIRMED` unwind requires newer report-over-report shrinkage in multiple crowded foreign-currency shorts.

@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V3.3.1", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -98,7 +98,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.3.1")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -121,7 +121,7 @@ with st.sidebar:
         set_setting("portfolio_value",portfolio_value); set_setting("lm_url",lm_url); set_setting("lm_model",lm_model); set_setting("lm_timeout",int(lm_timeout)); set_setting("auto_verify",bool(auto_verify)); set_setting("auto_verify_limit",int(auto_verify_limit))
         st.success("Settings saved")
 
-with st.spinner("Collecting markets, FRED/repo, Treasury auctions/fiscal flows, CFTC, TIC, COFER, stablecoins and news..."):
+with st.spinner("Collecting markets, FRED/repo, Treasury financing/Z.1, auctions/fiscal flows, CFTC, TIC, COFER, stablecoins and news..."):
     bundle=load_live_data()
 
 snapshot=bundle["snapshot"]
@@ -133,7 +133,7 @@ news_class=classify_news(news_df)
 verification_queue_now=build_verification_queue(news_df,30)
 if not verification_queue_now.empty:
     upsert_verification_queue(verification_queue_now.to_dict(orient="records"))
-# V3.3.1: standing policy probes ensure the research funnel does not go dark when Google News/RSS
+# V3.4: standing policy probes ensure the research funnel does not go dark when Google News/RSS
 # is unavailable or has no qualifying headlines. These are propositions to test, never factual
 # evidence, and enter the same relevance -> LLM -> human-approval gate as headline claims.
 standing_policy_probe_rows=systematic_policy_leads(max_rows=10)
@@ -206,8 +206,8 @@ if coverage_df.empty:
     coverage_df=pd.DataFrame({"Regime":list(scores.get("regime_evidence_coverage",{})),"Effective coverage %":list(scores.get("regime_evidence_coverage",{}).values())})
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
-(exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.3.1 Roadmap"
+(exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4 Roadmap"
 ])
 
 with exec_tab:
@@ -247,9 +247,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.3.1 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.3.1 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -329,6 +329,98 @@ with market_tab:
         fc[2].metric("FYTD deficit",fmt_money((fm.get("fytd_deficit_mn") or 0)*1e6))
         fc[3].metric("Fiscal-flow stress",f"{fm.get('stress_score',0):.0f}/100")
         st.json(fm)
+
+with financing_tab:
+    st.subheader("Who Is Financing the U.S. Deficit?")
+    tf=bundle.get("treasury_financing_meta",{}) or {}
+    if not tf.get("available"):
+        st.warning("Treasury financing/Z.1 data unavailable. Missing holder data is uncertainty, not evidence of healthy private demand.")
+        if tf.get("source_errors"): st.json(tf.get("source_errors"))
+    else:
+        cls=tf.get("classification",{}) or {}
+        mc=tf.get("monetary_capable_absorption_pct")
+        fa=tf.get("fed_absorption_pct"); ba=tf.get("bank_absorption_pct")
+        foreign=tf.get("foreign_absorption_pct"); dealer=tf.get("dealer_warehousing_pct")
+        mmf=tf.get("mmf_absorption_pct"); money=tf.get("money_confirmation",{}) or {}
+        top=st.columns(6)
+        top[0].metric("Financing regime",str(cls.get("state","UNKNOWN")),help="Heuristic pressure state, not a probability.")
+        top[1].metric("Monetary-capable absorption","—" if mc is None else f"{mc:.1f}%")
+        top[2].metric("Fed absorption","—" if fa is None else f"{fa:.1f}%")
+        top[3].metric("Banks + credit unions","—" if ba is None else f"{ba:.1f}%")
+        top[4].metric("Foreign absorption","—" if foreign is None else f"{foreign:.1f}%")
+        top[5].metric("Dealer warehousing","—" if dealer is None else f"{dealer:.1f}%")
+        st.caption(f"Latest common Z.1 quarter: {tf.get('as_of_quarter','?')} | Net marketable issuance: {fmt_money((tf.get('issuance_saar_mn') or 0)*1e6)} SAAR. Negative holder shares are preserved rather than clamped to zero.")
+        if cls.get("reason"):
+            (st.error if cls.get("state")=="RED" else st.warning if cls.get("state") in {"ORANGE","YELLOW"} else st.success)(cls.get("reason"))
+        if cls.get("confirmations"): st.write("**Market-structure confirmations:** "+"; ".join(cls.get("confirmations")))
+
+        holders=pd.DataFrame(tf.get("holders",[]) or [])
+        if not holders.empty:
+            show=holders.copy()
+            show["Flow (SAAR $B)"]=pd.to_numeric(show["flow_saar_mn"],errors="coerce")/1000.0
+            show["Share of issuance %"]=pd.to_numeric(show["share_of_issuance_pct"],errors="coerce")
+            st.plotly_chart(px.bar(show,x="holder",y="Share of issuance %",text="Share of issuance %",title=f"Treasury absorption by tracked holder — {tf.get('as_of_quarter','latest')}"),width="stretch")
+            st.dataframe(show[["holder","Flow (SAAR $B)","Share of issuance %","role"]].round(2),width="stretch",hide_index=True)
+
+        st.subheader("Money-creation confirmation")
+        mc2=st.columns(4)
+        m2g=money.get("m2_3m_annualized_pct"); dg=money.get("deposits_3m_annualized_pct"); cg=money.get("confirmation_3m_annualized_pct"); bs=money.get("bank_treasury_agency_3m_change_bn")
+        mc2[0].metric("M2 — 3m annualized","—" if m2g is None else f"{m2g:+.1f}%")
+        mc2[1].metric("Bank deposits — 3m annualized","—" if dg is None else f"{dg:+.1f}%")
+        mc2[2].metric("Money confirmation","—" if cg is None else f"{cg:+.1f}%")
+        mc2[3].metric("Bank Treasury+agency — 3m","—" if bs is None else f"${bs:+.1f}B")
+        st.caption("The H.8 bank-security series includes agencies as well as Treasuries and is therefore confirmation/proxy data only. It is never substituted for the quarterly Treasury-only Z.1 holder flow.")
+
+        st.subheader("Repo funding / intermediation layer")
+        funding=tf.get("funding_layer",{}) or {}
+        if not funding.get("available"):
+            st.warning("Sector repo funding data unavailable. This does not change Treasury-holder absorption; it leaves the funding mechanism less observed.")
+        else:
+            rc=st.columns(3)
+            gross=funding.get("dealer_repo_gross_bn"); netb=funding.get("dealer_repo_net_borrowing_bn"); mmfr=funding.get("mmf_repo_assets_bn")
+            rc[0].metric("Dealer gross repo balance sheet","—" if gross is None else f"${gross:,.0f}B")
+            rc[1].metric("Dealer net repo borrowing","—" if netb is None else f"${netb:+,.0f}B")
+            rc[2].metric("MMF repo assets","—" if mmfr is None else f"${mmfr:,.0f}B")
+            st.caption(str(funding.get("note","")))
+            rpdf=pd.DataFrame(funding.get("rows",[]) or [])
+            if not rpdf.empty:
+                st.dataframe(rpdf[[c for c in ["metric","level_bn","qoq_change_bn","date"] if c in rpdf.columns]].round(1),width="stretch",hide_index=True)
+
+        hist=pd.DataFrame(tf.get("history",[]) or [])
+        if not hist.empty:
+            hist["date"]=pd.to_datetime(hist["date"],errors="coerce")
+            hcols=[x for x in ["monetary_capable_share_pct","fed_share_pct","bank_share_pct","dealer_share_pct","foreign_share_pct","mmf_share_pct"] if x in hist.columns]
+            st.subheader("Financing mix history")
+            st.plotly_chart(px.line(hist.tail(80),x="date",y=hcols,markers=False,title="Share of net marketable Treasury issuance — Z.1 SAAR"),width="stretch")
+            st.caption("Shares can exceed 100% or be negative because some sectors are net sellers while others absorb more than the net issuance. This is expected flow-of-funds accounting, not a chart error.")
+
+        st.subheader("SLR / bank-balance-sheet capacity")
+        slr=tf.get("slr_policy",{}) or {}
+        sc=st.columns(4)
+        sc[0].metric("SLR regime",str(slr.get("regime","UNKNOWN")))
+        sc[1].metric("Effective",str(slr.get("effective_date","?")))
+        sc[2].metric("Treasury exemption","YES" if slr.get("treasury_exemption") else "NO")
+        sc[3].metric("Reserve exemption","YES" if slr.get("reserve_exemption") else "NO")
+        st.info(str(slr.get("description","")))
+        if slr.get("scope_note"): st.caption(str(slr.get("scope_note")))
+
+        with st.expander("Detailed Z.1 sectors"):
+            detail=pd.DataFrame(tf.get("holder_detail",[]) or [])
+            if not detail.empty:
+                detail["Flow (SAAR $B)"]=pd.to_numeric(detail["flow_saar_mn"],errors="coerce")/1000.0
+                detail["Share of issuance %"]=pd.to_numeric(detail["share_of_issuance_pct"],errors="coerce")
+                st.dataframe(detail[["sector","Flow (SAAR $B)","Share of issuance %"]].round(2),width="stretch",hide_index=True)
+            st.caption(f"Holder-series coverage: {tf.get('holder_series_ok','?')}/{tf.get('holder_series_total','?')} ({tf.get('holder_coverage_pct',0):.0f}%).")
+
+        with st.expander("Methodology / double-counting guardrails"):
+            st.json(tf.get("methodology",{}))
+            st.markdown("""
+- **Holder layer:** Fed, banks, foreign sector, dealers, MMFs and households are Treasury-holder flows.
+- **Funding layer:** repo, hedge funds/basis trades and SLR capacity explain *how* positions are financed; they are not added as another holder bucket.
+- **Monetary-capable ≠ proven monetization:** Fed + bank absorption is a transmission-capacity measure. M2/deposit growth is required as confirmation.
+- **Dealers ≠ final demand:** rising dealer share is warehousing/intermediation pressure and can be a warning rather than healthy end-buyer demand.
+- **Stablecoins are look-through:** tokenized/stablecoin Treasury exposure is not added again when the underlying Treasury is already held by an MMF/issuer sector.
+""")
 
 with flows_tab:
     st.subheader("CFTC FX positioning")
@@ -417,7 +509,7 @@ with policy_tab:
             st.dataframe(pd.DataFrame([{"Action class":k,"Engine meaning":v} for k,v in tax.items()]),width="stretch",hide_index=True)
 
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V3.3.1 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V3.4 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -506,7 +598,7 @@ with policy_tab:
         quarantined_checks=pd.DataFrame(recent_quarantined_verification_checks(100))
         if not quarantined_checks.empty:
             with st.expander(f"Quarantined legacy/source-mismatch checks ({len(quarantined_checks)})"):
-                st.caption("V3.3.1 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
+                st.caption("V3.4 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
                 qcols=[c for c in ["created_at","claim","source_url","verdict","relevance_status","quarantine_reason"] if c in quarantined_checks.columns]
                 st.dataframe(quarantined_checks[qcols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source")})
         reviewable=persisted_queue[persisted_queue["status"].isin(["CHECKED","IRRELEVANT_SOURCE"])] if "status" in persisted_queue.columns else pd.DataFrame()
@@ -530,7 +622,7 @@ with policy_tab:
             if cc.button("Mark disputed",key=f"dispute_check_{qid}",width="stretch"):
                 update_verification_queue_approval(int(qid),"DISPUTED"); st.success("Check marked disputed.")
     if verification_queue.empty:
-        st.info("No headline claims are available right now. V3.3.1 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
+        st.info("No headline claims are available right now. V3.4 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
     else:
         st.dataframe(verification_queue,width="stretch",hide_index=True,column_config={"link":st.column_config.LinkColumn("headline link")})
         selected_claim=st.selectbox("Load a queued claim into the verifier",verification_queue["claim"].tolist(),key="queued_claim_select")
@@ -547,7 +639,7 @@ with policy_tab:
             show=pd.DataFrame(candidates)
             show_cols=[c for c in ["name","source_tier","route_reason","relevance_status","relevance_score","claim_overlap_ratio","bucket_anchor_overlap","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
             st.dataframe(show[show_cols],width="stretch",hide_index=True,column_config={"final_url":st.column_config.LinkColumn("primary source")})
-            st.caption("Discovery is not verification. V3.3.1 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
+            st.caption("Discovery is not verification. V3.4 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
             if st.button("LLM-check top primary candidates",width="stretch"):
                 if not lm_url:
                     st.error("Configure the local LLM base URL first.")
@@ -555,7 +647,7 @@ with policy_tab:
                     checked=0
                     relevant_candidates=[x for x in candidates if x.get("reachable") and x.get("relevance_status")=="RELEVANT"]
                     if not relevant_candidates:
-                        st.warning("No candidate passed the V3.3.1 semantic relevance gate; no LLM claim check was run.")
+                        st.warning("No candidate passed the V3.4 semantic relevance gate; no LLM claim check was run.")
                     for c in relevant_candidates[:3]:
                         fetched=fetch_source_text(c.get("final_url") or c.get("url"),max_chars=30000,timeout=12)
                         if not fetched.get("ok"): continue
@@ -701,7 +793,7 @@ with health_tab:
         if lagged.get("ok"):
             st.info(f"Lagged NY Fed official validation ({lagged.get('period','?')}): offshore dollar funding = {lagged.get('status','UNKNOWN')}; basis characterization = {lagged.get('basis_characterization','UNKNOWN')}. This is quarterly context only and does not raise live coverage or fire a funding trigger.")
     st.markdown("""
-### V3.3.1 evidence rules
+### V3.4 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.
@@ -711,7 +803,7 @@ with health_tab:
 - **Future-dated observations are hygiene warnings.** They are not treated as extra-fresh data and are confidence-discounted.
 - **RWA tokens are not stablecoins.** Yield-accumulating tokenized Treasury products are separated before $1 peg tests.
 - **Repo tail ≠ median funding stress.** SOFR99-IORB has its own percentile/persistence trigger and is never described as distance to the median SOFR-IORB threshold.
-- **Domestic funding coverage ≠ global funding coverage.** V3.3.1 adds a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
+- **Domestic funding coverage ≠ global funding coverage.** V3.4 retains a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
 - **Proxy ≠ basis.** CME/Yahoo front-futures dislocation is anomaly context only and must never be described as covered-interest-parity or cross-currency basis.
 - **Fact ≠ interpretation.** Deterministically validated official facts may raise coverage and receive only bounded mechanical effects; motive/intent interpretations remain human-approved.
 - **Spot ≠ observed unwind.** FX price action may be consistent with short-covering, but CFTC positions are called CONFIRMED unwinding only when newer report-over-report positioning actually shrinks in multiple crowded foreign-currency shorts.

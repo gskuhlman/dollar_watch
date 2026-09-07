@@ -14,7 +14,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/3.0 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/3.4 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
