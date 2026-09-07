@@ -49,7 +49,7 @@ def test_offline_canonical_fallback_still_produces_structured_mof_and_lagged_bas
     with patch('dollar_dashboard.official_policy._get', side_effect=RuntimeError('offline')):
         jp=fetch_japan_mof_intervention(timeout=1)
         basis=fetch_nyfed_basis_validation(timeout=1)
-    assert jp['ok'] and jp['amount_trillion_yen']==15.3993 and jp['fetch_mode']=='LAST_KNOWN_CACHE'
+    assert jp['ok'] and jp['amount_trillion_yen']==15.3993 and jp['fetch_mode']=='LAST_KNOWN_VALIDATED_CACHE'
     assert basis['ok'] and basis['status']=='STABLE' and basis['basis_characterization']=='HISTORICALLY_TIGHT'
     assert basis['lagged_validation_only'] is True
 

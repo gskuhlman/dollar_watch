@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 ACTORS = json.loads((ROOT / "config" / "actors.json").read_text(encoding="utf-8"))
 
-st.set_page_config(page_title="dollar_watch V3.2", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.3", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -98,7 +98,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.2")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.3")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -133,7 +133,7 @@ news_class=classify_news(news_df)
 verification_queue_now=build_verification_queue(news_df,30)
 if not verification_queue_now.empty:
     upsert_verification_queue(verification_queue_now.to_dict(orient="records"))
-# V3.2: standing policy probes ensure the research funnel does not go dark when Google News/RSS
+# V3.3: standing policy probes ensure the research funnel does not go dark when Google News/RSS
 # is unavailable or has no qualifying headlines. These are propositions to test, never factual
 # evidence, and enter the same relevance -> LLM -> human-approval gate as headline claims.
 standing_policy_probe_rows=systematic_policy_leads(max_rows=10)
@@ -207,7 +207,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.2 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.3 Roadmap"
 ])
 
 with exec_tab:
@@ -247,9 +247,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.2 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.3 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.2 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.3 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -312,6 +312,9 @@ with market_tab:
         if bm.get("completed_offer_accept_ratio") is not None:
             st.caption(f"All completed operations offer/accept: {bm.get('completed_offer_accept_ratio'):.2f}x | Long-end acceptance vs parsed max capacity: " + ("—" if bm.get("long_end_acceptance_vs_capacity") is None else f"{100*bm.get('long_end_acceptance_vs_capacity'):.1f}%"))
         st.caption("TreasuryDirect schedule and completed result XMLs are separate. Announced capacity, submitted offers and accepted amounts are shown distinctly. This is debt-management/liquidity-support evidence, not QE or automatic auction-rescue evidence.")
+        fpe=bm.get("forward_policy_event") or {}
+        if fpe.get("status")=="ANNOUNCED":
+            st.info(f"Forward policy event: Treasury announced nominal long-end liquidity-support buyback maximums of at least {fmt_money(fpe.get('long_end_nominal_max_per_operation'))} per operation from {fpe.get('effective_start')} through {fpe.get('effective_end')}. Parsed operation schedule detail may lag this policy announcement.")
         if not bm.get("results_conclusions_allowed",False): st.warning(f"Buyback result set is {bm.get('result_classification','UNKNOWN')}; execution conclusions are gated. Missing operations are unknown, not zero. Max-amount parse: {bm.get('max_amount_parse_status','UNKNOWN')}.")
         if not bundle.get("buybacks",pd.DataFrame()).empty: st.dataframe(bundle["buybacks"],width="stretch",hide_index=True)
     else: st.warning("Treasury buyback monitoring unavailable; treat as missing policy evidence.")
@@ -377,7 +380,7 @@ with policy_tab:
     op=snapshot.get("official_policy_meta",{}) or {}
     jp=op.get("japan_fx_intervention",{}) or {}; usfx=op.get("us_fx_intervention",{}) or {}
     oc=st.columns(4)
-    oc[0].metric("Japan MOF intervention", "YES" if jp.get("intervention_occurred") else ("0 / none" if jp.get("ok") else "UNKNOWN"))
+    oc[0].metric("Japan MOF intervention", ("YES — direction unknown" if jp.get("intervention_occurred") and str(jp.get("direction") or "UNKNOWN").upper()=="UNKNOWN" else ("YES" if jp.get("intervention_occurred") else ("0 / none" if jp.get("ok") else "UNKNOWN"))))
     oc[1].metric("Latest MOF amount", f"¥{float(jp.get('amount_trillion_yen') or 0):.4f}T" if jp.get("ok") else "n/a")
     us_label = "NO" if usfx.get("finding")=="NO_US_FX_INTERVENTION" else ("YES" if usfx.get("finding")=="US_FX_INTERVENTION" else "UNKNOWN")
     oc[2].metric("Latest U.S. direct FX status", us_label, help=f"Latest quarter: {usfx.get('period') or '?'}")
@@ -401,7 +404,7 @@ with policy_tab:
             st.dataframe(pd.DataFrame([{"Action class":k,"Engine meaning":v} for k,v in tax.items()]),width="stretch",hide_index=True)
 
     st.subheader("Verified analyst evidence inputs")
-    st.warning("V3.2 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
+    st.warning("V3.3 rule: an analyst slider changes hard regime math only when its verification status is VERIFIED and it has a classified source URL. Unverified inputs remain visible but effective value = 0.")
     labels={
         "broad_fx_intervention":"Broad U.S./coordinated FX intervention","fed_independence_pressure":"Pressure on Fed independence / rate path",
         "treasury_auction_stress":"Additional Treasury absorption stress","foreign_official_selling":"Additional foreign official reserve selling",
@@ -490,7 +493,7 @@ with policy_tab:
         quarantined_checks=pd.DataFrame(recent_quarantined_verification_checks(100))
         if not quarantined_checks.empty:
             with st.expander(f"Quarantined legacy/source-mismatch checks ({len(quarantined_checks)})"):
-                st.caption("V3.2 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
+                st.caption("V3.3 automatically quarantines persisted LLM checks whose source candidate fails the current semantic relevance gate. Quarantined checks are excluded from LLM context and cannot be approved as evidence.")
                 qcols=[c for c in ["created_at","claim","source_url","verdict","relevance_status","quarantine_reason"] if c in quarantined_checks.columns]
                 st.dataframe(quarantined_checks[qcols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("source")})
         reviewable=persisted_queue[persisted_queue["status"].isin(["CHECKED","IRRELEVANT_SOURCE"])] if "status" in persisted_queue.columns else pd.DataFrame()
@@ -514,7 +517,7 @@ with policy_tab:
             if cc.button("Mark disputed",key=f"dispute_check_{qid}",width="stretch"):
                 update_verification_queue_approval(int(qid),"DISPUTED"); st.success("Check marked disputed.")
     if verification_queue.empty:
-        st.info("No headline claims are available right now. V3.2 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
+        st.info("No headline claims are available right now. V3.3 standing policy probes are still persisted above, so primary-source research continues even when the news feed is dark.")
     else:
         st.dataframe(verification_queue,width="stretch",hide_index=True,column_config={"link":st.column_config.LinkColumn("headline link")})
         selected_claim=st.selectbox("Load a queued claim into the verifier",verification_queue["claim"].tolist(),key="queued_claim_select")
@@ -531,7 +534,7 @@ with policy_tab:
             show=pd.DataFrame(candidates)
             show_cols=[c for c in ["name","source_tier","route_reason","relevance_status","relevance_score","claim_overlap_ratio","bucket_anchor_overlap","anchor","excerpt","final_url","reachable","error"] if c in show.columns]
             st.dataframe(show[show_cols],width="stretch",hide_index=True,column_config={"final_url":st.column_config.LinkColumn("primary source")})
-            st.caption("Discovery is not verification. V3.2 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
+            st.caption("Discovery is not verification. V3.3 rejects IRRELEVANT_SOURCE candidates before the LLM sees them; only semantically relevant official pages are eligible for claim checking.")
             if st.button("LLM-check top primary candidates",width="stretch"):
                 if not lm_url:
                     st.error("Configure the local LLM base URL first.")
@@ -539,7 +542,7 @@ with policy_tab:
                     checked=0
                     relevant_candidates=[x for x in candidates if x.get("reachable") and x.get("relevance_status")=="RELEVANT"]
                     if not relevant_candidates:
-                        st.warning("No candidate passed the V3.2 semantic relevance gate; no LLM claim check was run.")
+                        st.warning("No candidate passed the V3.3 semantic relevance gate; no LLM claim check was run.")
                     for c in relevant_candidates[:3]:
                         fetched=fetch_source_text(c.get("final_url") or c.get("url"),max_chars=30000,timeout=12)
                         if not fetched.get("ok"): continue
@@ -685,7 +688,7 @@ with health_tab:
         if lagged.get("ok"):
             st.info(f"Lagged NY Fed official validation ({lagged.get('period','?')}): offshore dollar funding = {lagged.get('status','UNKNOWN')}; basis characterization = {lagged.get('basis_characterization','UNKNOWN')}. This is quarterly context only and does not raise live coverage or fire a funding trigger.")
     st.markdown("""
-### V3.2 evidence rules
+### V3.3 evidence rules
 - **Data confidence is not thesis confidence.** It measures source availability/freshness.
 - **Stale data are discounted before scoring.** TIC/COFER/CFTC no longer contribute their full raw score when stale.
 - **Regime scores are not probabilities.** A 41/100 fiscal score means elevated fiscal-duration risk, not a 41% chance of crisis.
@@ -695,7 +698,7 @@ with health_tab:
 - **Future-dated observations are hygiene warnings.** They are not treated as extra-fresh data and are confidence-discounted.
 - **RWA tokens are not stablecoins.** Yield-accumulating tokenized Treasury products are separated before $1 peg tests.
 - **Repo tail ≠ median funding stress.** SOFR99-IORB has its own percentile/persistence trigger and is never described as distance to the median SOFR-IORB threshold.
-- **Domestic funding coverage ≠ global funding coverage.** V3.2 adds a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
+- **Domestic funding coverage ≠ global funding coverage.** V3.3 adds a modest front-futures/spot dislocation proxy, but missing true cross-currency-basis/FX-swap data still limits Dollar Funding Squeeze coverage.
 - **Proxy ≠ basis.** CME/Yahoo front-futures dislocation is anomaly context only and must never be described as covered-interest-parity or cross-currency basis.
 - **Unknown ≠ absent.** When critical regime coverage is below 50%, narrative output must use unverified/unknown/insufficient-evidence language rather than asserting the factor is absent.
 """)

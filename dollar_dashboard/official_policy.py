@@ -15,9 +15,9 @@ from urllib.parse import urljoin
 import requests
 
 UA_VARIANTS=[
-    {"User-Agent":"dollar_watch/3.2 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
+    {"User-Agent":"dollar_watch/3.3 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
     {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36","Accept-Language":"en-US,en;q=0.9"},
-    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.2; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
+    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.3; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
 ]
 UA=UA_VARIANTS[0]
 
@@ -25,6 +25,7 @@ UA=UA_VARIANTS[0]
 MOF_FX_INDEX="https://www.mof.go.jp/english/policy/international_policy/reference/feio/index.html"
 MOF_FX_MONTHLY_INDEX="https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/index.html"
 MOF_FX_20260828="https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/20260828.html"
+MOF_FX_20260828_EN="https://www.mof.go.jp/english/policy/international_policy/reference/feio/monthly/20260828e.html"
 NYFED_FX_QUARTERS="https://www.newyorkfed.org/markets/quar_reports"
 NYFED_FX_QUARTERS_2025="https://www.newyorkfed.org/markets/quar_reports2025"
 TREASURY_READOUTS="https://home.treasury.gov/news/press-releases/readouts"
@@ -69,6 +70,10 @@ CANONICAL_SEED_TEXT={
         "text": "外国為替平衡操作の実施状況 令和8年7月30日～令和8年8月26日 外国為替平衡操作額 15兆3,993億円",
         "published":"2026-08-28","source_kind":"PACKAGED_LAST_KNOWN_OFFICIAL",
     },
+    MOF_FX_20260828_EN: {
+        "text": "Foreign Exchange Intervention Operations (July 30, 2026 through August 26, 2026). Total amount of foreign exchange intervention operations: ¥15,399.3 billion.",
+        "published":"2026-08-28","source_kind":"PACKAGED_LAST_KNOWN_OFFICIAL",
+    },
     NYFED_Q2_2026_REPORT: {
         "text": "April-June 2026 NY Fed FX report: offshore U.S. dollar funding conditions in FX swaps remained stable; borrowing premiums remained low relative to historical averages, and euro-dollar and dollar-yen three-month basis spreads were at historically tight levels. Aggregate central-bank dollar swaps were $250 million at quarter-end.",
         "published":"2026-08-13","source_kind":"PACKAGED_LAST_KNOWN_OFFICIAL",
@@ -108,6 +113,13 @@ def _save_cache(cache:dict)->None:
     except Exception:
         pass
 
+def _cache_delete(url:str)->None:
+    try:
+        cache=_load_cache()
+        if url in cache:
+            cache.pop(url,None); _save_cache(cache)
+    except Exception:
+        pass
 
 def _cache_put(url:str,text:str,final_url:str|None=None,content_type:str="text/html")->None:
     if not url or not text: return
@@ -233,35 +245,101 @@ def _parse_yen_intervention_amount(text:str):
     return None
 
 
+
+def _decode_response_text(r) -> str:
+    """Decode official HTML defensively; requests can mis-detect Japanese pages."""
+    raw=getattr(r,'content',b'') or b''
+    enc=getattr(r,'encoding',None)
+    apparent=getattr(r,'apparent_encoding',None)
+    for candidate in (enc, apparent, 'utf-8', 'cp932', 'shift_jis'):
+        if not candidate: continue
+        try:
+            text=raw.decode(candidate,errors='strict')
+            if text:
+                return text
+        except Exception:
+            pass
+    try:
+        return getattr(r,'text','') or raw.decode('utf-8',errors='replace')
+    except Exception:
+        return ''
+
+def _parse_english_yen_intervention_amount(text:str):
+    s=_normalize_japanese_numeric(text)
+    m=re.search(r'(?:total amount[^¥$]{0,120})?[¥\u00a5]\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*billion',s,re.I)
+    if not m:
+        m=re.search(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*billion\s*yen',s,re.I)
+    if not m: return None
+    return int(round(float(m.group(1).replace(',',''))*1_000_000_000))
+
 def fetch_japan_mof_intervention(timeout:int=12)->dict:
-    """Read the latest monthly Japan MOF intervention release with deterministic fallback."""
-    out={"ok":False,"source_url":MOF_FX_MONTHLY_INDEX,"source_tier":"PRIMARY","amount_yen":None,"amount_trillion_yen":None}
+    """Read Japan MOF monthly intervention totals. English page is primary; Japanese is cross-check/fallback.
+
+    Monthly totals establish occurrence/amount only. Direction (yen bought/sold) remains UNKNOWN
+    until quarterly detailed operations data identifies currencies bought/sold.
+    """
+    out={"ok":False,"source_url":MOF_FX_20260828_EN,"source_tier":"PRIMARY","amount_yen":None,"amount_trillion_yen":None,"direction":"UNKNOWN"}
+
+    # 1) English canonical release: simpler, stable numeric notation. Validate before caching.
+    try:
+        r=_get(MOF_FX_20260828_EN,timeout)
+        html=_decode_response_text(r); text=_plain(html)
+        amount=_parse_english_yen_intervention_amount(text)
+        if amount is not None:
+            _cache_put(MOF_FX_20260828_EN,text,r.url,r.headers.get('content-type','text/html'))
+            out.update({"ok":True,"source_url":r.url,"canonical_url":MOF_FX_20260828_EN,"period_start":"2026-07-30","period_end":"2026-08-26",
+                        "amount_yen":amount,"amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
+                        "direction":"UNKNOWN","direction_confidence":0.0,"fetched_at":datetime.now(timezone.utc).isoformat(),
+                        "fetch_mode":"LIVE_ENGLISH_PRIMARY","live_reachable":True,
+                        "interpretation_guard":"Monthly MOF total proves occurrence/amount only; transaction direction is unknown until quarterly currency bought/sold detail is available."})
+            return out
+    except Exception as exc:
+        out['english_error']=str(exc)
+
+    # 2) Japanese canonical/index flow. Decode defensively and only promote cache after successful parse.
     candidates=[]; index_error=None
     try:
-        r=_get(MOF_FX_MONTHLY_INDEX,timeout); p=_Links(); p.feed(r.text)
+        r=_get(MOF_FX_MONTHLY_INDEX,timeout); html=_decode_response_text(r); p=_Links(); p.feed(html)
         for href,anchor in p.links:
             full=urljoin(r.url,href).split('#',1)[0]
             if re.search(r'/reference/feio/data/monthly/20\d{6}\.html?$',full): candidates.append((full,anchor))
     except Exception as exc:
         index_error=str(exc)
-    # Known canonical latest release is a fallback, not a substitute for a newer discovered link.
     if not any(u==MOF_FX_20260828 for u,_ in candidates): candidates.append((MOF_FX_20260828,'2026-08-28 canonical fallback'))
     candidates=sorted(set(candidates),key=lambda x:x[0],reverse=True)
     for full,anchor in candidates:
-        fetched=_fetch_html_with_fallback(full,timeout,index_url=MOF_FX_MONTHLY_INDEX,anchor_terms=('外国為替','令和8年','8月'))
-        if not fetched.get('ok'): continue
-        text=fetched.get('text',''); amount=_parse_yen_intervention_amount(text); start,end=_parse_jp_period(text+' '+anchor)
-        if amount is None: continue
-        out.update({
-            "ok":True,"source_url":fetched.get('final_url') or full,"canonical_url":full,"index_url":MOF_FX_MONTHLY_INDEX,
-            "release_anchor":anchor,"period_start":start,"period_end":end,"amount_yen":amount,
-            "amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
-            "fetched_at":datetime.now(timezone.utc).isoformat(),"fetch_mode":fetched.get('fetch_mode'),
-            "live_reachable":bool(fetched.get('live_reachable')),"cache_kind":fetched.get('cache_kind'),
-            "interpretation_guard":"Official Japan intervention amount only; monthly total does not by itself establish transaction direction or broad U.S. dollar intent.",
-        })
+        try:
+            r=_get(full,timeout); html=_decode_response_text(r); text=_plain(html)
+            amount=_parse_yen_intervention_amount(text); start,end=_parse_jp_period(text+' '+anchor)
+            if amount is None: continue
+            _cache_put(full,text,r.url,r.headers.get('content-type','text/html'))
+            out.update({"ok":True,"source_url":r.url,"canonical_url":full,"index_url":MOF_FX_MONTHLY_INDEX,"release_anchor":anchor,
+                        "period_start":start or '2026-07-30',"period_end":end or '2026-08-26',"amount_yen":amount,
+                        "amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
+                        "direction":"UNKNOWN","direction_confidence":0.0,"fetched_at":datetime.now(timezone.utc).isoformat(),
+                        "fetch_mode":"LIVE_JAPANESE_FALLBACK","live_reachable":True,
+                        "interpretation_guard":"Monthly MOF total proves occurrence/amount only; direction is unknown until quarterly detailed operations are published."})
+            return out
+        except Exception:
+            continue
+
+    # 3) Validated packaged/cache fallbacks, English first. Never return a poisoned live cache if it fails parsing.
+    for url,parser in ((MOF_FX_20260828_EN,_parse_english_yen_intervention_amount),(MOF_FX_20260828,_parse_yen_intervention_amount)):
+        cached=cached_official_source_text(url)
+        if not cached.get('ok'): continue
+        text=cached.get('text',''); amount=parser(text)
+        if amount is None:
+            _cache_delete(url)  # purge stale/unparseable live cache so the packaged canonical seed can recover next run
+            seed=CANONICAL_SEED_TEXT.get(url) or {}
+            text=seed.get('text',''); amount=parser(text)
+            if amount is None: continue
+        start,end=_parse_jp_period(text) if url==MOF_FX_20260828 else ('2026-07-30','2026-08-26')
+        out.update({"ok":True,"source_url":cached.get('final_url') or url,"canonical_url":url,"period_start":start or '2026-07-30',"period_end":end or '2026-08-26',
+                    "amount_yen":amount,"amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
+                    "direction":"UNKNOWN","direction_confidence":0.0,"fetch_mode":"LAST_KNOWN_VALIDATED_CACHE","live_reachable":False,
+                    "cache_kind":cached.get('cache_kind'),"interpretation_guard":"Monthly MOF total proves occurrence/amount only; direction is unknown until quarterly detail."})
         return out
-    out['error']='MOF release found or seeded but intervention amount did not parse'
+    out['error']='MOF monthly release available but validated intervention amount did not parse'
     if index_error: out['index_error']=index_error
     return out
 

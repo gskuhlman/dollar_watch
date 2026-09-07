@@ -111,6 +111,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     jp_fx=official_policy.get("japan_fx_intervention",{}) or {}
     us_fx=official_policy.get("us_fx_intervention",{}) or {}
     japan_fx_catalyst=0.0
+    japan_fx_directional=False
     if jp_fx.get("ok") and jp_fx.get("intervention_occurred"):
         age_days=999.0
         try:
@@ -118,7 +119,13 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             age_days=(datetime.now(timezone.utc)-end).total_seconds()/86400.0
         except Exception:
             pass
-        japan_fx_catalyst=10.0 if age_days<=45 else (6.0 if age_days<=90 else (3.0 if age_days<=180 else 0.0))
+        direction=str(jp_fx.get("direction") or "UNKNOWN").upper()
+        japan_fx_directional=direction in {"JPY_BOUGHT","YEN_BOUGHT","BUY_JPY"}
+        if japan_fx_directional:
+            japan_fx_catalyst=8.0 if age_days<=45 else (5.0 if age_days<=90 else (2.0 if age_days<=180 else 0.0))
+        else:
+            # Monthly total confirms intervention activity but not currency direction. Small non-directional catalyst only.
+            japan_fx_catalyst=2.0 if age_days<=45 else (1.0 if age_days<=90 else 0.0)
     us_direct_fx_counterevidence=-3.0 if us_fx.get("ok") and us_fx.get("finding")=="NO_US_FX_INTERVENTION" else 0.0
 
     market_conf = _conf(snapshot, "market")
@@ -360,12 +367,21 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
 
     fx_squeeze = 5 + 0.70 * fx_squeeze_auto + japan_fx_catalyst + fx_policy_evidence_net
     # Confirmation of a short-covering squeeze = crowded shorts plus foreign FX strengthening.
-    if jpy_3m < -0.03: fx_squeeze += 8 * market_conf
-    if eur_3m > 0.03: fx_squeeze += 5 * market_conf
-    if chf_3m < -0.03: fx_squeeze += 5 * market_conf
+    def _ramp(x, start, full, max_points, positive=True):
+        v=x if positive else -x
+        if v <= start: return 0.0
+        if v >= full: return max_points
+        return max_points * (v-start) / max(1e-9, (full-start))
+    # Smooth spot confirmation: no cliff at exactly +/-3%.
+    fx_squeeze += _ramp(jpy_3m, 0.02, 0.06, 8.0, positive=False) * market_conf
+    fx_squeeze += _ramp(eur_3m, 0.02, 0.06, 5.0, positive=True) * market_conf
+    fx_squeeze += _ramp(chf_3m, 0.02, 0.06, 5.0, positive=False) * market_conf
     fx_squeeze = _clamp(fx_squeeze)
     if japan_fx_catalyst>0:
-        drivers["fx_positioning_squeeze"].append(f"Japan MOF reports recent direct FX intervention; structured catalyst +{japan_fx_catalyst:.0f}")
+        if japan_fx_directional:
+            drivers["fx_positioning_squeeze"].append(f"Japan MOF intervention direction confirms yen support; directional catalyst +{japan_fx_catalyst:.0f}")
+        else:
+            drivers["fx_positioning_squeeze"].append(f"Japan MOF monthly data confirms intervention activity, but direction is unknown; non-directional catalyst +{japan_fx_catalyst:.0f}")
     if fx_policy_evidence_net>0:
         drivers["fx_positioning_squeeze"].append(f"Approved bilateral FX-policy evidence adds {fx_policy_evidence_net:+.0f} points")
     if fx_squeeze_auto >= 55:

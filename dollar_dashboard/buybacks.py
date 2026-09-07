@@ -526,5 +526,14 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "max_amount_parse_status": "OK" if max_amount_known else "UNKNOWN_OR_PARSE_FAILED",
         "intensity_status": "KNOWN" if intensity is not None else "UNKNOWN",
         "intensity": None if intensity is None else round(intensity, 1),
+        "forward_policy_event": {
+            "status":"ANNOUNCED",
+            "effective_start":"2026-09-09",
+            "effective_end":"2026-11-04",
+            "long_end_nominal_max_per_operation":4000000000,
+            "minimum_language":True,
+            "source_url":"https://home.treasury.gov/news/press-releases/sb0607",
+            "description":"Treasury announced nominal 10Y-20Y and 20Y-30Y liquidity-support buyback maximums of at least $4B per operation beginning Sep 9 through Nov 4; schedule detail may arrive separately."
+        },
         "interpretation": "Treasury debt-management/liquidity-support activity. Long-end means nominal 10Y-20Y and 20Y-30Y sectors only. Not QE and not proof of failed auction demand.",
     }

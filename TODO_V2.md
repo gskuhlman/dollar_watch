@@ -1,5 +1,18 @@
 # dollar_watch roadmap
 
+## V3.3 — production bug-fix / feature freeze completed
+- [x] English-first Japan MOF monthly intervention ingestion.
+- [x] Validate before caching and purge invalid MOF cached content.
+- [x] Monthly intervention totals are occurrence/amount only; direction remains UNKNOWN until detailed operations data.
+- [x] Smooth JPY/EUR/CHF spot-confirmation ramps; remove threshold cliffs.
+- [x] Carry Treasury Sep 9-Nov 4 long-end buyback-capacity announcement into the forward-event calendar.
+- [x] Full inherited regression suite plus V3.3 tests.
+
+## Feature freeze after V3.3
+Use live history to calibrate thresholds and decision performance before adding new architecture.
+
+# dollar_watch roadmap
+
 ## V3.2 — Official-source resilience / intervention history completed
 - [x] Normalize Japanese full-width digits/punctuation and parse `兆` / `億` MOF intervention amounts robustly.
 - [x] Add retry/backoff, Treasury Readouts index resolution, and auditable last-known-official cache fallback for transient 503/403 failures.

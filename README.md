@@ -1,9 +1,13 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.2
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.3
 
 A local Python/Streamlit research application that monitors U.S. dollar regime risk and translates changing evidence into bounded, auditable portfolio actions.
 
 
 
+
+## V3.3 production bug-fix / feature-freeze release
+
+V3.3 fixes the remaining production discrepancies without changing the six-regime model. Japan MOF ingestion now uses the English monthly release first, validates content before caching, purges unparseable cached MOF pages, and treats monthly intervention totals as non-directional until detailed currency bought/sold data is available. FX spot-confirmation scoring is ramped rather than cliff-triggered at exactly +/-3%. Treasury's announced Sep 9-Nov 4 long-end buyback-capacity increase is carried as a forward policy event even if operation-schedule rows have not yet appeared.
 
 ## V3.2 official-source resilience / intervention-history freeze release
 
