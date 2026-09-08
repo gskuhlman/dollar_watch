@@ -35,7 +35,7 @@ def render_generated_markdown(text: str) -> None:
     st.markdown(safe)
 
 
-st.set_page_config(page_title="dollar_watch V3.4.6", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4.8", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -105,7 +105,7 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.6")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.8")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
 
 with st.sidebar:
@@ -214,7 +214,7 @@ if coverage_df.empty:
 if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
 
 (exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.6 Roadmap"
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.8 Roadmap"
 ])
 
 with exec_tab:
@@ -254,9 +254,9 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
 
-    if st.button("Save complete V3.4.6 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.8 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.6 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.8 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -317,7 +317,7 @@ with market_tab:
         bc[6].metric("Result completeness",("—" if bm.get("result_completeness_pct") is None else f"{bm.get('result_completeness_pct'):.0f}%"))
         bc[7].metric("Policy intensity",("UNKNOWN" if bm.get("intensity") is None else f"{bm.get('intensity'):.0f}/100"))
         if bm.get("completed_offer_accept_ratio") is not None:
-            st.caption(f"All completed operations offer/accept: {bm.get('completed_offer_accept_ratio'):.2f}x | Long-end acceptance vs parsed max capacity: " + ("—" if bm.get("long_end_acceptance_vs_capacity") is None else f"{100*bm.get('long_end_acceptance_vs_capacity'):.1f}%"))
+            st.caption(f"All completed operations offer/accept: {bm.get('completed_offer_accept_ratio'):.2f}x | Long-end offer/accept: " + ("—" if bm.get("long_end_offer_accept_ratio") is None else f"{bm.get('long_end_offer_accept_ratio'):.2f}x") + " | Long-end offer/capacity: " + ("—" if bm.get("long_end_offer_to_capacity_ratio") is None else f"{bm.get('long_end_offer_to_capacity_ratio'):.2f}x") + " | Long-end acceptance vs parsed max capacity: " + ("—" if bm.get("long_end_acceptance_vs_capacity") is None else f"{100*bm.get('long_end_acceptance_vs_capacity'):.1f}%"))
         st.caption("TreasuryDirect schedule and completed result XMLs are separate. Announced capacity, submitted offers and accepted amounts are shown distinctly. This is debt-management/liquidity-support evidence, not QE or automatic auction-rescue evidence.")
         fpe=bm.get("forward_policy_event") or {}
         if fpe.get("status")=="ANNOUNCED":
@@ -502,6 +502,26 @@ with flows_tab:
     else:
         st.dataframe(bundle["tic_summary"].round(2),width="stretch",hide_index=True)
         if bundle.get("tic_meta",{}).get("reasons"): st.write("**TIC drivers:** "+"; ".join(bundle["tic_meta"]["reasons"]))
+
+    txm=bundle.get("tic_transaction_meta",{}) or {}
+    tx_rows=[]
+    for key,label in (("grand_total","All foreign holders"),("foreign_official","Foreign official")):
+        r=txm.get(key,{}) or {}
+        if r:
+            tx_rows.append({
+                "Sector":label,
+                "Date":r.get("date"),
+                "Holdings change $B":None if r.get("monthly_position_change_mn") is None else float(r.get("monthly_position_change_mn"))/1000.0,
+                "Net transactions $B":None if r.get("net_transactions_mn") is None else float(r.get("net_transactions_mn"))/1000.0,
+                "LT valuation $B":None if r.get("long_term_valuation_change_mn") is None else float(r.get("long_term_valuation_change_mn"))/1000.0,
+                "Residual $B":None if r.get("non_transaction_residual_mn") is None else float(r.get("non_transaction_residual_mn"))/1000.0,
+                "Transactions / change %":r.get("transaction_share_of_position_change_pct"),
+                "Reconciles":"YES" if r.get("reconciles") else "NO",
+            })
+    if tx_rows:
+        with st.expander("TIC transaction / valuation decomposition"):
+            st.dataframe(pd.DataFrame(tx_rows).round(2),width="stretch",hide_index=True)
+            st.caption("Each row is a separate decomposition. Never mix all-foreign-holder values with foreign-official values. Identity: holdings change = net transactions + long-term valuation change + residual. Transactions are the active purchase/sale measure; the residual also captures short-term valuation, custody/reclassification and other effects.")
 
     st.subheader("IMF COFER reserve composition")
     cm=bundle.get("cofer_meta",{})

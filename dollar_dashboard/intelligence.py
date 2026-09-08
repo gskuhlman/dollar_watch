@@ -653,15 +653,28 @@ def summarize_tic_transactions(fred_hist: pd.DataFrame) -> dict[str, Any]:
             if d in vv.index:
                 val=float(vv.loc[d])
         residual=pos_change-net_tx-(val or 0.0)
+        tx_share=None if abs(pos_change)<1e-9 else net_tx/pos_change
+        # Keep the decomposition self-auditing.  The LLM receives both grand-total and
+        # foreign-official blocks, so every block carries its own sector label, share,
+        # and reconciliation identity.  This prevents cross-sector arithmetic such as
+        # dividing grand-total transactions by the foreign-official holdings change.
+        reconstructed=net_tx+(val or 0.0)+residual
+        reconciliation_error=pos_change-reconstructed
         out[key]={
+            "sector": key,
             "date": str(pd.Timestamp(d).date()),
             "ending_holdings_mn": h_now,
             "monthly_position_change_mn": pos_change,
             "net_transactions_mn": net_tx,
             "long_term_valuation_change_mn": val,
             "non_transaction_residual_mn": residual,
-            "transaction_share_of_position_change": None if abs(pos_change)<1e-9 else net_tx/pos_change,
-            "note": "Transactions measure active net purchases/sales. Long-term valuation is price effect on LT Treasuries; residual also captures short-term valuation/custody/reclassification/other changes.",
+            "transaction_share_of_position_change": tx_share,
+            "transaction_share_of_position_change_pct": None if tx_share is None else tx_share*100.0,
+            "reconstructed_position_change_mn": reconstructed,
+            "reconciliation_error_mn": reconciliation_error,
+            "reconciles": abs(reconciliation_error) < 1e-6,
+            "decomposition_identity": "monthly_position_change = net_transactions + LT_valuation_change + non_transaction_residual",
+            "note": "Transactions measure active net purchases/sales. Long-term valuation is price effect on LT Treasuries; residual also captures short-term valuation/custody/reclassification/other changes. Never combine this sector's decomposition with another sector's values.",
         }
     # private net transactions are directly published and useful even without a private holdings decomposition.
     c="Foreign Treasury net transactions private (millions)"

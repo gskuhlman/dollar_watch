@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import uuid
 
-APP_VERSION='3.4.6'
+APP_VERSION='3.4.8'
 SCHEMA_VERSION='3.4.1'
 
 

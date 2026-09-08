@@ -473,6 +473,8 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
     long_completed_max_series = pd.to_numeric(long_completed.get("max_amount"), errors="coerce") if not long_completed.empty and "max_amount" in long_completed else pd.Series(dtype=float)
     long_completed_capacity = float(long_completed_max_series.dropna().sum()) if int(long_completed_max_series.notna().sum()) else None
     long_accept_capacity = (long_accepted / long_completed_capacity) if long_completed_capacity and long_completed_capacity > 0 else None
+    long_offer_accept = (long_offered / long_accepted) if long_accepted > 0 else None
+    long_offer_capacity = (long_offered / long_completed_capacity) if long_completed_capacity and long_completed_capacity > 0 else None
     completeness = meta.get("result_completeness_pct")
     result_classification = "COMPLETE" if completeness is not None and completeness >= 80 else ("INCOMPLETE" if completeness is not None else "UNKNOWN_EXPECTED_SET")
     conclusions_allowed = result_classification == "COMPLETE"
@@ -506,6 +508,8 @@ def summarize_buybacks(df: pd.DataFrame, meta: dict) -> dict:
         "long_end_completed_total_accepted": long_accepted,
         "long_end_completed_capacity": long_completed_capacity,
         "long_end_acceptance_vs_capacity": None if long_accept_capacity is None else round(long_accept_capacity, 3),
+        "long_end_offer_accept_ratio": None if long_offer_accept is None else round(long_offer_accept, 3),
+        "long_end_offer_to_capacity_ratio": None if long_offer_capacity is None else round(long_offer_capacity, 3),
         "total_max_amount": total_max,
         # Legacy field retained for UI/LLM compatibility.  Prefer observed completed-operation
         # capacity; otherwise show upcoming announced capacity.  Separate scoped fields below

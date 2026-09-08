@@ -1,10 +1,18 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.6
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.8
 
-## V3.4.6 intervention-asset inference hardening
+## V3.4.8 deterministic arithmetic and inference hardening
+
+V3.4.8 moves the long-end Treasury buyback offer/accept and offer/capacity multiples into deterministic code after the red-team model miscomputed $111.8B / $12B as 6.1x instead of about 9.3x. It also prevents broad-dollar index attribution from a single FX cross without contribution data and prevents historical percentiles from being treated as automatic valuation/entry signals. No risk-score or portfolio math changed.
+
+## V3.4.7 TIC decomposition integrity patch
+
+The TIC transaction/valuation decomposition is now sector-locked and self-reconciling. Grand-total and foreign-official values cannot be mixed when computing transaction shares, and the dashboard exposes the deterministic decomposition directly for audit. No risk-score or portfolio math changed.
+
+## V3.4.7 intervention-asset inference hardening
 
 The red-team layer no longer treats a future confirmation of Japanese yen-buying intervention as proof that Japan sold U.S. Treasuries or disposed of a specific USD asset. Asset/instrument attribution now requires explicit verified evidence.
 
-## V3.4.6 semantic/calendar hardening
+## V3.4.7 semantic/calendar hardening
 
 - Fixes a silent CFTC-calendar bug: `scoring.py` used `pd.Timestamp` without importing pandas, so derived publication/calendar fields were being swallowed by the existing error guard and returned as null.
 - Separates the CFTC lifecycle into latest position-as-of, latest expected Friday publication, next Tuesday position-as-of, and next expected Friday publication.

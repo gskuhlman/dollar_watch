@@ -6,8 +6,8 @@ from dollar_dashboard.run_history import APP_VERSION, SCHEMA_VERSION
 
 
 def test_v344_metadata_schema_unchanged():
-    assert __version__ == "3.4.6"
-    assert APP_VERSION == "3.4.6"
+    assert __version__ == "3.4.8"
+    assert APP_VERSION == "3.4.8"
     assert SCHEMA_VERSION == "3.4.1"
 
 
