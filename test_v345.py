@@ -36,8 +36,8 @@ def _score():
 
 
 def test_version():
-    assert __version__ == "3.4.8"
-    assert APP_VERSION == "3.4.8"
+    assert __version__ == "3.4.25"
+    assert APP_VERSION == "3.4.25"
 
 
 def test_cftc_four_date_lifecycle():

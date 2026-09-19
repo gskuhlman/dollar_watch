@@ -4,21 +4,32 @@ import os
 import requests
 
 
-def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = None, score_delta_threshold: float = 8.0, triggers: list[dict] | None = None) -> list[dict]:
+def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = None, score_delta_threshold: float = 8.0, triggers: list[dict] | None = None, delta_reference: dict | None = None, delta_label: str = "1D") -> list[dict]:
     alerts: list[dict] = []
     prev_scores = (previous or {}).get("scores", {}) if previous else {}
-    prev_regimes = prev_scores.get("regimes", {})
+    # Analytical regime-change alerts use a fixed-horizon reference (normally 1D).
+    # Adjacent-run state is retained separately for phase/trigger transition semantics.
+    delta_scores = (delta_reference or {}).get("scores", {}) if delta_reference else {}
+    delta_regimes = delta_scores.get("regimes", {})
+    delta_quality_status = (delta_reference or {}).get("_data_quality_status","STABLE") if delta_reference else "STABLE"
+    delta_quality_changes = (delta_reference or {}).get("_material_data_quality_changes",[]) if delta_reference else []
 
     for name, val in current_scores.get("regimes", {}).items():
-        old = prev_regimes.get(name)
+        old = delta_regimes.get(name)
         if old is not None:
             delta = float(val) - float(old)
             if abs(delta) >= score_delta_threshold:
+                quality_affected = delta_quality_status == "DATA_QUALITY_AFFECTED"
                 alerts.append({
-                    "severity": "HIGH" if val >= 70 or delta >= 15 else "WATCH",
-                    "kind": "regime_change",
-                    "message": f"{name} changed {delta:+.1f} points to {val:.1f}/100.",
-                    "regime": name, "score": val, "delta": delta,
+                    "severity": "WATCH" if quality_affected else ("HIGH" if val >= 70 or delta >= 15 else "WATCH"),
+                    "kind": "regime_change_data_quality_affected" if quality_affected else "regime_change",
+                    "message": (
+                        f"{name} changed {delta:+.1f} points over {delta_label} to {val:.1f}/100, but material source-confidence/availability changed across the horizon; do not interpret this as a pure market move."
+                        if quality_affected else
+                        f"{name} changed {delta:+.1f} points over {delta_label} to {val:.1f}/100."
+                    ),
+                    "regime": name, "score": val, "delta": delta, "delta_horizon": delta_label,
+                    "data_quality_status": delta_quality_status,
                 })
         if float(val) >= 70:
             alerts.append({
@@ -27,6 +38,16 @@ def generate_alerts(current_scores: dict, portfolio_df, previous: dict | None = 
                 "message": f"{name} is {val:.1f}/100.",
                 "regime": name, "score": val,
             })
+
+    if delta_reference and delta_quality_status == "DATA_QUALITY_AFFECTED":
+        comps=", ".join(str(x.get("component")) for x in delta_quality_changes[:5] if x.get("component")) or "one or more components"
+        conf_delta=(delta_reference or {}).get("_confidence_delta")
+        conf_txt=f"; overall confidence changed {float(conf_delta):+.1f} points" if conf_delta is not None else ""
+        alerts.append({
+            "severity":"WATCH", "kind":"fixed_horizon_data_quality_change",
+            "message":f"{delta_label} analytical comparison is data-quality affected ({comps}{conf_txt}); score deltas require source-quality context.",
+            "delta_horizon":delta_label,"data_quality_changes":delta_quality_changes,
+        })
 
     phase = current_scores.get("phase")
     old_phase = prev_scores.get("phase") if previous else None

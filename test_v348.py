@@ -6,8 +6,8 @@ from dollar_dashboard.llm import analyze_with_local_llm
 import inspect
 
 def test_version():
-    assert __version__ == "3.4.8"
-    assert APP_VERSION == "3.4.8"
+    assert __version__ == "3.4.25"
+    assert APP_VERSION == "3.4.25"
 
 def test_deterministic_long_end_buyback_ratios():
     now=pd.Timestamp.now(tz="UTC")

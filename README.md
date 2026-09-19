@@ -1,4 +1,107 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.8
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.25
+
+## V3.4.23 — persistent runtime database + release migrations
+
+V3.4.23 separates **replaceable release code** from **persistent runtime data**. The release ZIP intentionally contains **no `data/` directory**. The live SQLite database remains at `<install-root>/data/dashboard.sqlite` by default, and the official-policy cache remains in the same persistent data area. Extracting a newer ZIP over the existing Dollar Watch installation therefore replaces application/database-definition code without replacing runtime history.
+
+Database schema instructions now live under `database/migrations/`. At startup Dollar Watch opens the existing SQLite file, creates a consistent SQLite backup under `data/backups/` if any release migration is pending, applies only unapplied migrations recorded in `schema_migrations`, and then continues using the same database. Existing pre-V3.4.23 databases are migrated in place; rows are not copied into a release database or reset.
+
+Runtime paths are anchored to the installation root rather than the shell's current working directory. Environment overrides remain available through `DOLLAR_WATCH_DATA_DIR`, `DOLLAR_DASHBOARD_DB`, and `DOLLAR_POLICY_CACHE`. The Data Health tab now shows the absolute database path, size, snapshot count, oldest/newest snapshot, database-migration version, and latest pre-migration backup so persistence problems are visible immediately.
+
+**Upgrade rule from V3.4.23 onward:** extract the ZIP over the same installation directory. The ZIP may replace `app.py`, `dollar_dashboard/`, `database/`, scripts, and documentation, but it does not contain `data/`; your existing `data/dashboard.sqlite` and runtime cache remain untouched.
+
+Score model remains **3.4.3** and analytical schema remains **3.4.1**; this release changes persistence/migration architecture, not regime math.
+
+## V3.4.22 — CFTC date semantics + event lifecycle language
+
+V3.4.22 hardens two remaining red-team presentation paths without changing scoring. Tuesday CFTC dates are position-as-of dates and may not be called report/publication dates; the generated analysis must pair them with the supplied expected Friday publication date. Event lifecycle vocabulary is also enforced: AGING, PENDING_REPLACEMENT, and EXPIRED evidence may not be called fresh. A tenor-specific auction rule prevents 2Y/5Y/7Y results from being treated as confirmation of the 10Y/30Y pair trigger or as substitutes for long-end evidence. Score model remains 3.4.3.
+
+## V3.4.21 — fixed-horizon display clarity
+
+V3.4.21 keeps the strict fixed-horizon comparison policy but makes missing history explicit in the UI. Missing or incomparable horizons render as `N/A` instead of `None`, and each horizon carries a deterministic reason such as “no stored snapshot within ±8 hours of the fixed target” or “reference score model differs from current.” No scoring or tolerance changes were made.
+
+
+## V3.4.21 mixed-instrument calendar lint + verified-fact coherence
+
+- Validates every tenor/date pair in compact future-auction prose; shared dates no longer let an unsupported tenor slip through.
+- Requires FRN/TIPS labels to remain explicit so non-nominal reopenings cannot masquerade as nominal coupon auctions.
+- Prevents month-specific verified facts from combining numerical attributes across different source periods.
+- Score model remains 3.4.3; no scoring or trigger thresholds changed.
+
+
+
+## V3.4.21 TIC path independence + data-quality-aware deltas
+
+- Direct Treasury TIC country holdings and FRED-hosted TIC transaction/valuation series now have independent failure/confidence paths. A country-table outage no longer zeroes an otherwise valid transaction decomposition.
+- Fixed-horizon comparisons now flag material source-confidence changes. When `DATA_QUALITY_AFFECTED`, regime deltas must be described as mixed signal + measurement change rather than pure economic movement.
+- Delta alerts are source-quality aware and the Executive tab exposes the affected components.
+- `SCORE_MODEL_VERSION` advances to **3.4.3** because transaction evidence can now remain score-eligible during an independent TIC country-table outage. Schema remains **3.4.1**.
+
+
+## V3.4.18 Treasury calendar + period-verification integrity
+
+- Treasury auction dates now use the America/New_York calendar instead of UTC rollover semantics.
+- Future nominal auction rows prefer the richer FiscalData auction table when the convenience feed disagrees on TIPS/FRN identity; TIPS/FRNs cannot become nominal replacements.
+- Red-team output is deterministically checked against the supplied upcoming nominal calendar and uses absolute dates rather than `today`/`tomorrow`.
+- Explicit month/quarter claims must match the period in the likely supporting source passage. A July source cannot verify an August claim; mismatches are INCONCLUSIVE.
+- Legacy SUPPORTED rows with a deterministic claim/source period mismatch are quarantined/downgraded on the next verification-summary sync.
+- Score model remains 3.4.2; schema remains 3.4.1.
+
+## V3.4.17 nominal-auction integrity + Z.1 hedge-fund fallback
+
+- **Fixes a score-affecting Treasury-auction classification bug.** FiscalData represents TIPS and FRNs inside broad Note/Bond security types and distinguishes them with inflation-index / floating-rate flags. V3.4.17 reads those flags before assigning canonical tenors.
+- Nominal 2Y/3Y/5Y/7Y/10Y/20Y/30Y auction-stress history now excludes TIPS and FRNs. A 10-Year TIPS reopening can no longer replace the nominal 10-Year note in trigger lifecycle/freshness logic.
+- Because historical fiscal scores can change after removing misclassified TIPS/FRNs, **`SCORE_MODEL_VERSION` advances to 3.4.2**. Fixed-horizon score comparisons across 3.4.1 ↔ 3.4.2 intentionally return `INCOMPARABLE_SCORE_MODEL` rather than manufacturing a market delta. Schema remains 3.4.1.
+- Adds an official Federal Reserve F3.2.t HTML fallback for the new hedge-fund Treasury transaction row (`FA623061103`) when FRED has not yet exposed `BOGZ1FA623061103Q`. Official table values are converted from billions SAAR to the dashboard's millions-SAAR units.
+- Strengthens percentile language: a 99th/100th percentile reading is extreme **within the supplied lookback**, not automatically an all-time record.
+- Adds deterministic post-generation narrative lint + one repair pass for two repeated errors: treating Fed bill accumulation/MBS runoff as structural dollar support, and promoting finite-window percentiles to unsupported “record/all-time” claims.
+
+## V3.4.15 liquidity-buffer and source-scope hardening
+
+- Thin reserve/TGA/RRP plumbing is a reduced-buffer watch condition, not a deterministic forecast of an impending repo event.
+- Supported analyst/news evidence is bounded to the exact verified scope; China/PBoC gold evidence cannot be generalized to global central-bank reserve rotation.
+- Regime direction is expressed as a tendency/scenario pressure rather than a guaranteed market move.
+- No scoring-model, schema, trigger, or portfolio changes.
+
+## V3.4.14 deterministic-evidence deduplication
+
+- Removes the duplicate Q2 NY Fed no-U.S.-FX-intervention row from analyst-facing `deterministic_verified_evidence`.
+- Adds explicit `fact_key` values and an authoritative `deterministic_evidence_summary` with unique-fact and action-class counts.
+- The canonical-statement validator may still display the Q2 source row for audit, but the local LLM is prohibited from adding it again to the unique deterministic-fact count.
+- No regime scoring, trigger thresholds, Treasury-financing math, or portfolio allocation changed. Score model/schema remain 3.4.1.
+
+## V3.4.13 verification/funding language hardening
+
+- Wrapped legacy evidence labels such as `VERDICT:_INCONCLUSIVE` now canonicalize before counting.
+- Complete-population verification summaries publish reconciliation totals for verdict, workflow, and relevance buckets.
+- Full-population breakdowns may not silently omit categories.
+- Zero swap/FIMA usage is counterevidence within observed scope, not proof that a dollar-funding shortage cannot exist.
+- Score model and schema remain 3.4.1.
+
+
+## V3.4.12 full-population verification accounting
+- Verification totals are full-database aggregates; prompt detail lists remain capped only for context size.
+- Legacy verdict typos/format variants are canonicalized for evidence counts while raw labels remain auditable.
+- Factual verdict, workflow-status, and relevance-gate counts are kept distinct.
+- Red-team language no longer infers market pricing/belief from spot moves alone and treats positioning decay conditionally rather than as automatically self-limiting.
+- Score model and schema remain 3.4.1.
+
+
+## V3.4.11 evidence accounting + score-lineage hardening
+
+- Keeps the V3.4.10 top navigation placement and all six-regime scoring thresholds unchanged.
+- Adds deterministic verification-check / queue summaries so the local LLM cannot produce contradictory evidence counts from truncated lists.
+- Adds an explicit `SCORE_MODEL_VERSION` separate from app/schema version. Fixed-horizon deltas become `INCOMPARABLE_SCORE_MODEL` when score formulas change, preventing code changes from masquerading as economic changes.
+- Clarifies that Fed bill accumulation with MBS runoff is reserve-management composition, not automatically structural dollar support.
+- Tightens inflation wording: below-trigger inflation can be described as not confirming debasement, but historically elevated percentiles must not be erased with an unqualified "contained/benign" label.
+
+## V3.4.10 top navigation + causal-language hardening
+
+The primary menu now sits directly under the title, before all analytical output. The first V3.4.9 red-team run also exposed three narrative hazards that are now guarded deterministically/in the LLM contract: Japanese intervention direction, Z.1 holder-flow causality, and Treasury-buyback offer/accept vocabulary. The human broad-intent gate now exposes an explicit SATISFIED/UNSATISFIED status. Scoring and portfolio math are unchanged.
+
+## V3.4.9 fixed-horizon change measurement
+
+Analytical change is measured against fixed historical horizons (1D, 7D, 1M, 3M, 6M, 1Y), not against the immediately previous application run. This prevents repeated runs on the same day from manufacturing meaningless deltas. Reference dates and tolerances are visible; unavailable comparable history is N/A. Adjacent-run lineage remains only for operational state transitions and debugging.
 
 ## V3.4.8 deterministic arithmetic and inference hardening
 
@@ -283,3 +386,24 @@ The V3.0 regression stack additionally covers TreasuryDirect buyback-result URL 
 - The app is research/decision support, not a fiduciary or autonomous trading system.
 
 See `TODO_V2.md` for the ranked roadmap.
+
+## V3.4.24 — historical regime-change comparisons
+
+The six fixed horizons still require an actual stored snapshot within the original
+1D ±8-hour, 7D ±1-day, 1M ±3-day, 3M ±7-day, 6M ±14-day,
+1Y ±21-day time windows. The 45 snapshots reported on September 19 cover
+September 6–18, 2026; no missing earlier history is synthesized.
+
+If the nearest historical snapshot used a previous score-model version but
+retained the necessary captured input summaries, the dashboard can replay it
+under the current scoring formula, freezing evidence aging at the original
+snapshot timestamp. Original evidence, overrides, and news scores are used;
+no current source observations are inserted into that past. Replay estimates
+are labeled with an ≈ symbol and a source-quality warning. This is an
+analytical estimate because historical upstream collector calculations are
+not reconstructed. If required historical inputs are missing, the horizon
+remains N/A and the reference table explains why.
+
+The database and cache remain in the existing persistent /data directory.
+This update ships no data/ directory and requires no new database migration;
+app 3.4.24 / schema 3.4.1 / score model 3.4.3 / migration 2.

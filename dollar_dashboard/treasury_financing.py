@@ -16,9 +16,12 @@ Treasury purchase and again as repo financing.
 
 from datetime import datetime, timezone
 from typing import Callable
+from html import unescape
+import re
 
 import numpy as np
 import pandas as pd
+import requests
 
 from .data import fetch_fred_series
 
@@ -61,6 +64,73 @@ OPTIONAL_Z1_FINANCING_SERIES = {
     "Hedge funds": "BOGZ1FA623061103Q",
 }
 OPTIONAL_Z1_ACTIVATION_DATE = pd.Timestamp("2026-09-11")
+
+
+FED_Z1_F32T_URL = "https://www.federalreserve.gov/releases/z1/current/html/F3_2_t.htm"
+
+
+def _html_cell_text(cell: str) -> str:
+    text = re.sub(r"<[^>]+>", "", cell or "")
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def _parse_fed_z1_html_series(html: str, series_code: str) -> pd.Series:
+    """Parse one quarterly transaction series from the Fed's official Z.1 HTML.
+
+    The HTML table reports billions of dollars at SAAR while the dashboard's
+    FRED-backed Z.1 holder layer uses millions of dollars at SAAR.  Values are
+    therefore multiplied by 1,000 so the fallback is unit-compatible.
+    """
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html or "", flags=re.I | re.S)
+    header = None
+    target = None
+    for row in rows:
+        cells = [_html_cell_text(x) for x in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row, flags=re.I | re.S)]
+        if not cells:
+            continue
+        if any(c.lower() == "series" for c in cells) and any(re.fullmatch(r"20\d{2}:Q[1-4]", c) for c in cells):
+            header = cells
+        if series_code in cells:
+            target = cells
+    if not header or not target:
+        raise ValueError(f"Fed Z.1 series {series_code} not found in F3.2.t HTML")
+
+    # Some Fed HTML variants include an unlabeled line-number column in the
+    # data rows. Align from the right because the quarterly columns are stable.
+    if len(target) != len(header):
+        if len(target) > len(header):
+            target = target[-len(header):]
+        else:
+            header = header[-len(target):]
+
+    vals = {}
+    for col, raw in zip(header, target):
+        if not re.fullmatch(r"20\d{2}:Q[1-4]", col):
+            continue
+        cleaned = str(raw).replace(",", "").strip()
+        if cleaned in {"", "--", "—", "-"}:
+            continue
+        try:
+            value_bn = float(cleaned)
+        except Exception:
+            continue
+        period = pd.Period(col.replace(":", ""), freq="Q")
+        vals[period.start_time] = value_bn * 1000.0
+    if not vals:
+        raise ValueError(f"Fed Z.1 series {series_code} has no quarterly numeric values")
+    out = pd.Series(vals, dtype=float, name=series_code).sort_index()
+    return out
+
+
+def fetch_fed_z1_f32t_series(series_code: str, timeout: int = 25) -> pd.Series:
+    """Official-Fed fallback for newly added Z.1 F3.2.t series not yet on FRED."""
+    r = requests.get(
+        FED_Z1_F32T_URL,
+        headers={"User-Agent": "dollar_watch/3.4.23 (Z.1 official fallback)"},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    return _parse_fed_z1_html_series(r.text, series_code)
 
 # Higher-frequency confirmation data. These are levels and are not added to Z.1
 # holder transactions.
@@ -421,6 +491,7 @@ def summarize_treasury_financing(
     z1_hist: pd.DataFrame,
     money_hist: pd.DataFrame | None = None,
     funding_hist: pd.DataFrame | None = None,
+    as_of: str | pd.Timestamp | None = None,
 ) -> dict:
     if z1_hist is None or z1_hist.empty or "Net marketable Treasury issuance" not in z1_hist.columns:
         return {
@@ -572,7 +643,12 @@ def summarize_treasury_financing(
             "hedge_fund_share_pct": None if not np.isfinite(hedge_h) else hedge_h / issue * 100,
         })
 
-    now_ts = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
+    if as_of is None:
+        now_ts = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
+    else:
+        now_ts = pd.Timestamp(as_of)
+        if now_ts.tzinfo is not None:
+            now_ts = now_ts.tz_convert("UTC").tz_localize(None)
     current_q = now_ts.to_period("Q")
     data_q = pd.Timestamp(q).to_period("Q")
     current_quarter_gap = max(0, current_q.ordinal - data_q.ordinal)
@@ -676,12 +752,36 @@ def fetch_treasury_financing(
             z1[label] = pd.Series(dtype=float, name=sid)
             errors[f"holder:{label}"] = str(exc)
     optional_holder_errors = {}
+    optional_holder_sources = {}
     if pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).normalize() >= OPTIONAL_Z1_ACTIVATION_DATE:
         for label, sid in OPTIONAL_Z1_FINANCING_SERIES.items():
+            fred_error = None
             try:
-                z1[label] = fetcher(sid, start=start)
+                candidate = fetcher(sid, start=start)
+                if candidate is not None and not candidate.dropna().empty:
+                    z1[label] = candidate
+                    optional_holder_sources[label] = {"source": "FRED", "series": sid}
+                else:
+                    fred_error = "FRED returned no observations"
             except Exception as exc:
-                optional_holder_errors[label] = str(exc)
+                fred_error = str(exc)
+
+            # New Z.1 rows can appear on the Board's release before FRED has a
+            # public series endpoint.  Use the official F3.2.t HTML only for the
+            # production/default fetcher; injected test fetchers remain isolated.
+            if label not in z1 and fetcher is fetch_fred_series:
+                try:
+                    z1[label] = fetch_fed_z1_f32t_series("FA623061103")
+                    optional_holder_sources[label] = {
+                        "source": "FED_F3_2_T_HTML",
+                        "series": "FA623061103",
+                        "url": FED_Z1_F32T_URL,
+                        "unit_conversion": "billions SAAR x1000 -> millions SAAR",
+                    }
+                except Exception as exc:
+                    optional_holder_errors[label] = f"FRED: {fred_error}; Fed HTML fallback: {exc}"
+            elif label not in z1 and fred_error:
+                optional_holder_errors[label] = fred_error
 
     z1_hist = pd.concat(z1, axis=1).sort_index() if z1 else pd.DataFrame()
 
@@ -711,6 +811,7 @@ def fetch_treasury_financing(
     summary["optional_holder_series"] = {
         "available": [label for label in OPTIONAL_Z1_FINANCING_SERIES if label in z1_hist and not z1_hist[label].dropna().empty],
         "errors": optional_holder_errors,
+        "sources": optional_holder_sources,
         "activation_date": str(OPTIONAL_Z1_ACTIVATION_DATE.date()),
     }
     summary["retrieved_at"] = datetime.now(timezone.utc).isoformat()

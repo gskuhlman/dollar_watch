@@ -13,9 +13,9 @@ from dollar_dashboard.news import classify_news
 from dollar_dashboard.scoring import DEFAULT_OVERRIDES, score
 from dollar_dashboard.portfolio import recommend, scenario_stress_test, scenario_hedge_alignment, ASSETS
 from dollar_dashboard.storage import (
-    save_snapshot, save_snapshot_if_new, recent_snapshots, get_overrides, set_override, get_setting, set_setting,
-    add_event, recent_events, save_alerts, recent_alerts, save_verification_check, recent_verification_checks, recent_quarantined_verification_checks,
-    upsert_verification_queue, recent_verification_queue, update_verification_queue_check, update_verification_queue_approval, approved_verification_evidence,
+    save_snapshot, save_snapshot_if_new, recent_snapshots, snapshots_for_fixed_horizons, get_overrides, set_override, get_setting, set_setting,
+    add_event, recent_events, save_alerts, recent_alerts, save_verification_check, recent_verification_checks, recent_quarantined_verification_checks, verification_check_summary_full, verification_queue_summary_full,
+    upsert_verification_queue, recent_verification_queue, update_verification_queue_check, update_verification_queue_approval, approved_verification_evidence, database_status,
 )
 from dollar_dashboard.alerts import generate_alerts
 from dollar_dashboard.llm import analyze_with_local_llm, verify_claim_against_source, compact_previous_context
@@ -23,7 +23,7 @@ from dollar_dashboard.triggers import evaluate_triggers
 from dollar_dashboard.evidence import classify_source, check_source_url, fetch_source_text
 from dollar_dashboard.verification import primary_source_candidates, discover_primary_evidence, systematic_policy_leads, verification_rows_from_news
 from dollar_dashboard.official_policy import canonical_verification_leads
-from dollar_dashboard.run_history import classify_snapshot_change
+from dollar_dashboard.run_history import classify_snapshot_change, build_fixed_horizon_context, fixed_horizon_reference, SCORE_MODEL_VERSION
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -35,7 +35,7 @@ def render_generated_markdown(text: str) -> None:
     st.markdown(safe)
 
 
-st.set_page_config(page_title="dollar_watch V3.4.8", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4.25", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -72,15 +72,17 @@ def build_verification_queue(news_df: pd.DataFrame, max_rows: int = 30) -> pd.Da
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def deterministic_analysis(scores, portfolio_df, news_class, prev=None):
+def deterministic_analysis(scores, portfolio_df, news_class, fixed_horizon_changes=None):
     lines=[]
-    if prev and "scores" in prev:
-        changes=[]
-        for k,v in scores["regimes"].items():
-            old=prev["scores"].get("regimes",{}).get(k)
-            if old is not None: changes.append((k,v-float(old)))
-        changes.sort(key=lambda x:abs(x[1]),reverse=True)
-        if changes: lines.append("**Largest risk-index changes:** "+", ".join(f"{k} {d:+.1f}" for k,d in changes[:5])+".")
+    fh=(fixed_horizon_changes or {}).get("horizons",{}) or {}
+    for label in ("1D","7D","1M","3M","6M","1Y"):
+        row=fh.get(label,{}) or {}
+        if row.get("status") != "OK":
+            continue
+        changes=sorted((row.get("regime_deltas",{}) or {}).items(),key=lambda x:abs(float(x[1])),reverse=True)
+        if changes:
+            ref=str(row.get("reference_timestamp",''))[:10]
+            lines.append(f"**{label} risk-index change** (reference {ref}, actual age {row.get('actual_age_days')}d): "+", ".join(f"{k} {float(d):+.1f}" for k,d in changes[:5])+".")
     dominant=max(scores["regimes"].items(),key=lambda kv:kv[1])
     lines.append(f"**Current phase:** {scores['phase']}. Early warning {scores['early_warning_index']:.0f}/100; confirmation {scores['confirmation_index']:.0f}/100; data-quality confidence {scores['confidence']:.0f}/100.")
     lines.append(f"**Highest absolute risk index:** {dominant[0]} at {dominant[1]:.1f}/100 ({severity(dominant[1])}). These are risk indices, not probabilities.")
@@ -105,8 +107,14 @@ def load_live_data():
     return collect_live_bundle()
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.8")
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.25")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
+
+# Primary navigation belongs directly under the title. All analytical results render inside
+# the selected tab so the menu never sits below the headline dashboard output.
+(exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
+    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.25 Roadmap"
+])
 
 with st.sidebar:
     st.header("Controls")
@@ -176,9 +184,12 @@ if auto_verify and lm_url and int(auto_verify_limit)>0:
             update_verification_queue_check(q["id"],explanation=str(exc),status="ERROR")
 overrides=get_overrides(DEFAULT_OVERRIDES)
 history=recent_snapshots(150)
+comparison_history=snapshots_for_fixed_horizons(snapshot)
 prev=next((h for h in history if h.get("timestamp") != snapshot.get("timestamp")), None)
 snapshot["approved_verification_evidence"]=approved_verification_evidence(100)
 scores=score(snapshot,news_class,overrides)
+fixed_horizon_changes=build_fixed_horizon_context(comparison_history,snapshot,scores,allow_historical_replay=True)
+one_day_reference=fixed_horizon_reference(fixed_horizon_changes,"1D")
 machine_triggers=evaluate_triggers(snapshot,scores, previous_triggers=(prev or {}).get("machine_triggers",[]))
 
 baseline=get_setting("baseline_allocation",DEFAULT_SETTINGS["baseline_allocation"])
@@ -188,36 +199,110 @@ portfolio_df,portfolio_meta=recommend(
     max_turnover_pct=max_turnover,min_position_pct=min_position,min_trade_dollars=min_trade_dollars,
     score_details=scores, machine_triggers=machine_triggers,
 )
-current_alerts=generate_alerts(scores,portfolio_df,prev,float(DEFAULT_SETTINGS.get("alert_threshold_points",8)),triggers=machine_triggers)
+current_alerts=generate_alerts(scores,portfolio_df,prev,float(DEFAULT_SETTINGS.get("alert_threshold_points",8)),triggers=machine_triggers,delta_reference=one_day_reference,delta_label="1D")
 change_classification=classify_snapshot_change(prev,snapshot,scores)
-auto_payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts,"change_classification":change_classification}
+auto_payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts,"change_classification":change_classification,"fixed_horizon_changes":fixed_horizon_changes}
 auto_rid,auto_saved=save_snapshot_if_new(auto_payload,snapshot.get("timestamp"),run_kind="AUTO_STREAMLIT")
 
-# Status: six regime indices, then meta indicators.
-reg_cols=st.columns(6)
-for col,(name,val) in zip(reg_cols,scores["regimes"].items()):
-    delta=None
-    if prev:
-        old=prev.get("scores",{}).get("regimes",{}).get(name)
-        if old is not None: delta=val-float(old)
-    col.metric(name,f"{val:.0f}/100",None if delta is None else f"{delta:+.1f}",help=f"{severity(val)} — risk index, not probability")
-meta_cols=st.columns(4)
-meta_cols[0].metric("Early warning",f"{scores['early_warning_index']:.0f}/100")
-meta_cols[1].metric("Market confirmation",f"{scores['confirmation_index']:.0f}/100")
-meta_cols[2].metric("Data-quality confidence",f"{scores['confidence']:.0f}/100")
-meta_cols[3].metric("Phase",scores["phase"])
-st.info("**Interpretation:** regime values are absolute 0–100 risk indices. Evidence coverage is separate: a low risk score with low coverage means uncertainty, not proof of safety.")
-cov_details=scores.get("regime_evidence_coverage_details",{})
-coverage_df=pd.DataFrame([{"Regime":k,"Effective coverage %":v.get("effective"),"Critical coverage %":v.get("critical"),"Generic coverage %":v.get("generic")} for k,v in cov_details.items()])
-if coverage_df.empty:
-    coverage_df=pd.DataFrame({"Regime":list(scores.get("regime_evidence_coverage",{})),"Effective coverage %":list(scores.get("regime_evidence_coverage",{}).values())})
-if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
-
-(exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.8 Roadmap"
-])
-
 with exec_tab:
+    # Status: six regime indices. Delta is fixed 1D, never "since last run".
+    reg_cols=st.columns(6)
+    one_day=((fixed_horizon_changes.get("horizons",{}) or {}).get("1D",{}) or {})
+    for col,(name,val) in zip(reg_cols,scores["regimes"].items()):
+        delta=None
+        if one_day.get("status")=="OK":
+            delta=(one_day.get("regime_deltas",{}) or {}).get(name)
+        delta_text=None if delta is None else f"{float(delta):+.1f} vs 1D"
+        details=[]
+        for label in ("1D", "7D", "1M"):
+            h=((fixed_horizon_changes.get("horizons",{}) or {}).get(label,{}) or {})
+            change=(h.get("regime_deltas",{}) or {}).get(name) if h.get("status")=="OK" else None
+            if change is None:
+                details.append(f"{label} N/A")
+            elif h.get("comparison_method") == "REPLAY_CURRENT_MODEL_SAVED_INPUTS":
+                details.append(f"{label} ≈{float(change):+.1f} pts (replay)")
+            else:
+                details.append(f"{label} {float(change):+.1f} pts")
+        col.metric(name,f"{val:.0f}/100",delta_text,help=(
+            f"{severity(val)} — risk index, not probability. "
+            + " | ".join(details)
+            + ". See fixed-horizon reference dates for actual ages, input-quality flags and replay methodology."
+        ))
+        col.caption(" · ".join(details))
+    if one_day.get("status")=="OK" and one_day.get("data_quality_status")=="DATA_QUALITY_AFFECTED":
+        changes=one_day.get("material_data_quality_changes",[]) or []
+        names=", ".join(str(x.get("component")) for x in changes[:6] if x.get("component")) or "historical input/replay methodology"
+        st.warning(f"1D score deltas are data-quality or retrospective-replay affected ({names}). Treat them as estimates, not pure market/economic moves.")
+
+    meta_cols=st.columns(4)
+    meta_cols[0].metric("Early warning",f"{scores['early_warning_index']:.0f}/100")
+    meta_cols[1].metric("Market confirmation",f"{scores['confirmation_index']:.0f}/100")
+    meta_cols[2].metric("Data-quality confidence",f"{scores['confidence']:.0f}/100")
+    meta_cols[3].metric("Phase",scores["phase"])
+    st.info("**Interpretation:** regime values are absolute 0–100 risk indices. Evidence coverage is separate: a low risk score with low coverage means uncertainty, not proof of safety.")
+
+    # Fixed-horizon change table: run frequency cannot manufacture or erase analytical deltas.
+    # Render unavailable/incomparable references explicitly as N/A; never leak Python None into the UI.
+    horizon_labels=("1D","7D","1M","3M","6M","1Y")
+    fh_rows=[]
+    for regime,val in scores["regimes"].items():
+        row={"Regime":regime,"Current":round(float(val),1)}
+        for label in horizon_labels:
+            h=((fixed_horizon_changes.get("horizons",{}) or {}).get(label,{}) or {})
+            d=(h.get("regime_deltas",{}) or {}).get(regime) if h.get("status")=="OK" else None
+            row[label]="N/A" if d is None else round(float(d),1)
+        fh_rows.append(row)
+    st.subheader("Fixed-horizon regime changes")
+    st.caption("Changes are risk-index points versus saved history. Different-score-model references are retrospectively re-scored only if complete historical inputs exist; replayed comparisons are flagged as estimates. Missing history remains N/A.")
+    horizon_map=fixed_horizon_changes.get("horizons",{}) or {}
+    if not any((horizon_map.get(label,{}) or {}).get("status")=="OK" for label in horizon_labels):
+        one_day=(horizon_map.get("1D",{}) or {})
+        seven_day=(horizon_map.get("7D",{}) or {})
+        st.info(
+            "No comparable fixed-horizon reference is available yet. "
+            f"1D: {one_day.get('status_reason') or one_day.get('status','UNAVAILABLE')}. "
+            f"7D: {seven_day.get('status_reason') or seven_day.get('status','UNAVAILABLE')}. "
+            "Historical snapshots are replayed under the current score formula only when their saved inputs support it; missing dates remain N/A."
+        )
+    st.dataframe(pd.DataFrame(fh_rows),width="stretch",hide_index=True)
+    ref_rows=[]
+    for label in horizon_labels:
+        h=(horizon_map.get(label,{}) or {})
+        quality_changes=h.get("material_data_quality_changes",[]) or []
+        status=h.get("status","UNAVAILABLE")
+        quality=h.get("data_quality_status") if status=="OK" else None
+        source_changes=", ".join(str(x.get("component")) for x in quality_changes[:6] if x.get("component"))
+        if status=="OK" and not source_changes:
+            source_changes=("Retrospective score replay; original collector lineage differs"
+                            if h.get("comparison_method")=="REPLAY_CURRENT_MODEL_SAVED_INPUTS"
+                            else "No material changes")
+        elif status!="OK":
+            source_changes="N/A"
+        def _ui_na(value):
+            return "N/A" if value is None or value=="" else value
+        ref_rows.append({
+            "Horizon":label,
+            "Status":status,
+            "Reason":h.get("status_reason") or "N/A",
+            "Data quality":_ui_na(quality),
+            "Material source changes":source_changes,
+            "Target":_ui_na(str(h.get("target_timestamp",''))[:19]),
+            "Reference":_ui_na(str(h.get("reference_timestamp",''))[:19] if h.get("reference_timestamp") else None),
+            "Actual age (days)":_ui_na(h.get("actual_age_days")),
+            "Target error (hours)":_ui_na(h.get("target_error_hours")),
+            "Method":_ui_na(h.get("comparison_method")),
+            "Replay caveat":_ui_na(h.get("replay_limitations")),
+            "Original score model":_ui_na(h.get("reference_original_score_model",h.get("reference_score_model"))),
+            "Reference score model":_ui_na(h.get("reference_score_model")),
+            "Current score model":h.get("current_score_model",SCORE_MODEL_VERSION),
+        })
+    with st.expander("Fixed-horizon reference dates",expanded=False):
+        st.dataframe(pd.DataFrame(ref_rows),width="stretch",hide_index=True)
+    cov_details=scores.get("regime_evidence_coverage_details",{})
+    coverage_df=pd.DataFrame([{"Regime":k,"Effective coverage %":v.get("effective"),"Critical coverage %":v.get("critical"),"Generic coverage %":v.get("generic")} for k,v in cov_details.items()])
+    if coverage_df.empty:
+        coverage_df=pd.DataFrame({"Regime":list(scores.get("regime_evidence_coverage",{})),"Effective coverage %":list(scores.get("regime_evidence_coverage",{}).values())})
+    if not coverage_df.empty: st.dataframe(coverage_df,width="stretch",hide_index=True)
     left,right=st.columns([1.2,1])
     with left:
         r=pd.DataFrame({"Regime":list(scores["regimes"]),"Risk index":list(scores["regimes"].values())})
@@ -229,7 +314,8 @@ with exec_tab:
     mix=pd.DataFrame({"Regime":list(scores["regime_mix_not_probability"]),"Mix %":list(scores["regime_mix_not_probability"].values())})
     st.dataframe(mix,width="stretch",hide_index=True)
 
-    st.subheader("Run lineage / change classification")
+    st.subheader("Run lineage / operational change audit")
+    st.caption("Adjacent-run comparison is retained for operational/source/trigger auditing only; analytical deltas use the fixed horizons above.")
     st.json(change_classification)
     st.subheader("What matters now")
     drivers=[]
@@ -252,11 +338,11 @@ with exec_tab:
     if current_alerts:
         st.subheader("Actionable alerts")
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
-    else: st.success("No alert threshold is currently crossed versus the prior saved snapshot.")
+    else: st.success("No current fixed-horizon or machine-trigger alert threshold is crossed.")
 
-    if st.button("Save complete V3.4.8 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.25 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.8 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.25 manual snapshot #{rid}")
 
 with market_tab:
     st.subheader("Market prices")
@@ -572,8 +658,12 @@ with policy_tab:
     canon=pd.DataFrame(op.get("canonical_statements",[]) or [])
     if not canon.empty:
         st.write("**Canonical nuanced-policy sources seeded into the verification workflow**")
+        st.caption("Validator/source rows can overlap a richer structured official fact. They are audit inputs, not an additional unique-fact count.")
         ccols=[c for c in ["bucket","claim","action_class","effect_target","deterministic_verified","deterministic_validation","reachable","live_reachable","fetch_mode","source_url"] if c in canon.columns]
         st.dataframe(canon[ccols],width="stretch",hide_index=True,column_config={"source_url":st.column_config.LinkColumn("official source")})
+    det_summary=scores.get("deterministic_evidence_summary",{}) or {}
+    if det_summary:
+        st.caption(f"Unique deterministic facts: {int(det_summary.get('total_unique_facts') or 0)} | action classes: {det_summary.get('action_class_counts') or {}}")
     det_now=pd.DataFrame(scores.get("deterministic_verified_evidence",[]) or [])
     if not det_now.empty:
         st.write("**Deterministic verified official facts — automatically admissible**")
@@ -784,7 +874,7 @@ with portfolio_tab:
 
 with analysis_tab:
     st.subheader("Deterministic analysis")
-    render_generated_markdown(deterministic_analysis(scores,portfolio_df,news_class,prev))
+    render_generated_markdown(deterministic_analysis(scores,portfolio_df,news_class,fixed_horizon_changes))
 
     st.subheader("Confidence weighting BEFORE regime math")
     cad=pd.DataFrame([{"Indicator":k,**v} for k,v in scores.get("confidence_adjustments",{}).items()])
@@ -810,15 +900,24 @@ with analysis_tab:
             events=recent_events(30)
             verified_events=[e for e in events if e.get("verification_status")=="VERIFIED"]
             unverified_events=[e for e in events if e.get("verification_status")!="VERIFIED"]
+            persisted_checks=recent_verification_checks(50)
             payload={
                 "scores":scores,"machine_triggers":machine_triggers,
+                "verification_check_summary":verification_check_summary_full(),
+                "verification_queue_state_summary":verification_queue_summary_full(),
                 "portfolio_recommendation":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,
                 "snapshot":snapshot,
-                "previous_run":compact_previous_context(prev,snapshot,scores),
+                "fixed_horizon_changes":fixed_horizon_changes,
+                "previous_run_audit_only": {
+                    "captured_at": (prev or {}).get("_captured_at", (prev or {}).get("timestamp")),
+                    "app_version": (prev or {}).get("_app_version"),
+                    "schema_version": (prev or {}).get("_schema_version"),
+                    "change_classification": change_classification,
+                } if prev else {},
                 "verified_analyst_evidence":[{k:v for k,v in e.items()} for e in verified_events],
                 "unverified_evidence_discovery_only":unverified_events,
                 "verification_queue_discovery_only":build_verification_queue(news_df,30).to_dict(orient="records") if not news_df.empty else [],
-                "persisted_primary_source_checks":recent_verification_checks(50),
+                "persisted_primary_source_checks":persisted_checks,
                 "headline_scores_discovery_only":news_class.get("scores",{}),
                 "headlines_discovery_only":news_df.head(50).to_dict(orient="records") if not news_df.empty else [],
             }
@@ -846,6 +945,23 @@ with hist_tab:
         if cols: st.plotly_chart(px.line(hdf,x="captured_at",y=cols,markers=True,range_y=[0,100],title="Risk-index history"),width="stretch")
 
 with health_tab:
+    st.subheader("Persistent database")
+    dbs=database_status()
+    st.code(dbs.get("database_path",""), language=None)
+    dc1,dc2,dc3,dc4=st.columns(4)
+    dc1.metric("Snapshots", f"{int(dbs.get('snapshot_count',0)):,}")
+    dc2.metric("Database size", f"{float(dbs.get('size_bytes',0))/1024/1024:.1f} MB")
+    dc3.metric("DB migration", str(dbs.get("database_migration_version",0)))
+    dc4.metric("App schema", "3.4.1")
+    st.caption(f"Oldest snapshot: {dbs.get('oldest_snapshot') or '—'} | Newest snapshot: {dbs.get('newest_snapshot') or '—'}")
+    if dbs.get("last_backup"):
+        st.caption(f"Latest pre-migration backup: {dbs.get('last_backup')}")
+    if dbs.get("error"):
+        st.error(f"Database status error: {dbs.get('error')}")
+    elif int(dbs.get("snapshot_count",0)) <= 2:
+        st.warning("This database contains very little snapshot history. If you expected older history, verify that this path is the same persistent data directory used by prior releases.")
+    st.info("Release ZIPs from V3.4.23 onward intentionally contain no data/ directory. The live SQLite database and official-policy cache remain in the persistent data directory across upgrades.")
+
     st.subheader("Source health / freshness")
     health=bundle.get("health",pd.DataFrame())
     if health.empty: st.warning("No source-health data available.")

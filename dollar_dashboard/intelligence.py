@@ -156,15 +156,54 @@ def summarize_cftc_fx(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:
         weekly_change = np.nan
         if len(hist) > 1:
             weekly_change = float(last["lev_net"] - hist.iloc[-2]["lev_net"])
+        lev_net = last.get("lev_net")
+        # Percentile semantics are easy to invert in prose.  For foreign-currency
+        # contracts, LOW leveraged-net percentiles mean unusually negative /
+        # crowded shorts; HIGH percentiles mean relatively long positioning.
+        # Preserve a deterministic state so the LLM never has to infer crowding
+        # from the sign of net contracts or percent-of-OI alone.
+        crowding_state = "UNKNOWN"
+        short_crowding_score = np.nan
+        if pd.notna(lev_pctile) and pd.notna(lev_net):
+            if label == "Dollar Index":
+                if lev_net > 0 and lev_pctile >= 80:
+                    crowding_state = "CROWDED_LONG"
+                elif lev_net > 0:
+                    crowding_state = "LONG_NOT_HISTORICALLY_CROWDED"
+                elif lev_net < 0 and lev_pctile <= 20:
+                    crowding_state = "CROWDED_SHORT"
+                elif lev_net < 0:
+                    crowding_state = "SHORT_NOT_HISTORICALLY_CROWDED"
+                else:
+                    crowding_state = "NEUTRAL"
+            else:
+                short_crowding_score = max(0.0, min(100.0, 100.0 - float(lev_pctile)))
+                if lev_net < 0 and lev_pctile <= 20:
+                    crowding_state = "CROWDED_SHORT"
+                elif lev_net < 0 and lev_pctile <= 35:
+                    crowding_state = "ELEVATED_SHORT"
+                elif lev_net < 0:
+                    crowding_state = "SHORT_NOT_HISTORICALLY_CROWDED"
+                elif lev_net > 0 and lev_pctile >= 80:
+                    crowding_state = "CROWDED_LONG"
+                elif lev_net > 0:
+                    crowding_state = "LONG_NOT_HISTORICALLY_CROWDED"
+                else:
+                    crowding_state = "NEUTRAL"
         rows.append({
             "market": label,
             "report_date": last["report_date"],
             "cftc_code": code,
             "open_interest": last.get("open_interest_all"),
-            "leveraged_net": last.get("lev_net"),
+            "leveraged_net": lev_net,
             "leveraged_net_pct_oi": last.get("lev_net_pct_oi"),
             "leveraged_weekly_change": weekly_change,
             "leveraged_3y_percentile": lev_pctile,
+            "leveraged_crowding_state": crowding_state,
+            "leveraged_short_crowding_score": short_crowding_score,
+            "leveraged_percentile_semantics": (
+                "LOW_PERCENTILE_MORE_SHORT; HIGH_PERCENTILE_MORE_LONG"
+            ),
             "asset_manager_net": last.get("asset_net"),
             "asset_manager_net_pct_oi": last.get("asset_net_pct_oi"),
             "asset_manager_3y_percentile": asset_pctile,
@@ -547,6 +586,49 @@ def period_last_date(period: str | None):
         return None if pd.isna(ts) else ts
     except Exception:
         return None
+
+
+def collect_tic_components_independent(fred_hist: pd.DataFrame, fetch_major_func=None) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Collect independent TIC holdings and transaction evidence paths.
+
+    The direct Treasury country-holdings table and the FRED-hosted TIC transaction/valuation
+    series can fail independently; a failure of one must not erase the other.
+    """
+    out: dict[str, Any] = {}
+    st: dict[str, dict[str, Any]] = {}
+    try:
+        tx_meta = summarize_tic_transactions(fred_hist if fred_hist is not None else pd.DataFrame())
+        out["tic_transaction_meta"] = tx_meta
+        tx_date = pd.to_datetime((tx_meta.get("grand_total",{}) or {}).get("date"), errors="coerce", utc=True)
+        st["TIC Treasury transactions / valuation"] = {
+            "ok": bool(tx_meta), "weight": 1.0, "last_date": tx_date,
+            "notes": "Independent FRED-hosted TIC transaction/valuation series; active net transactions are separated from position changes, LT valuation and residual/custody effects. Direct TIC country-table availability is not required.",
+            **({} if tx_meta else {"error":"Required FRED TIC transaction/holdings series unavailable or insufficient for reconciliation"}),
+        }
+    except Exception as e:
+        out["tic_transaction_meta"] = {}
+        st["TIC Treasury transactions / valuation"] = {
+            "ok": False, "weight": 1.0, "error": str(e),
+            "notes":"Independent FRED TIC transaction decomposition failed; do not infer active purchases/sales from holdings changes.",
+        }
+
+    fetcher = fetch_major_func or fetch_tic_major_holders
+    try:
+        tic = fetcher()
+        tic_summary, tic_pressure, tic_meta = summarize_tic(tic)
+        out["tic"] = tic; out["tic_summary"] = tic_summary; out["tic_pressure"] = tic_pressure; out["tic_meta"] = tic_meta
+        last = tic["date"].max() if not tic.empty and "date" in tic else None
+        st["TIC country Treasury holdings"] = {
+            "ok": not tic_summary.empty, "weight": 1.1, "last_date": last,
+            "notes": "Direct Treasury TIC country table; monthly, structurally lagged and confidence-weighted before scoring. Independent of FRED-hosted TIC transaction decomposition.",
+        }
+    except Exception as e:
+        out["tic"] = pd.DataFrame(); out["tic_summary"] = pd.DataFrame(); out["tic_pressure"] = 0.0; out["tic_meta"] = {}
+        st["TIC country Treasury holdings"] = {
+            "ok": False, "weight": 1.1, "error": str(e),
+            "notes":"Direct TIC country table unavailable; this does not invalidate an independently healthy FRED TIC transaction decomposition.",
+        }
+    return out, st
 
 
 def build_data_health(source_status: dict[str, dict[str, Any]]) -> tuple[pd.DataFrame, float]:

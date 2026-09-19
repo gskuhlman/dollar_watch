@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from io import StringIO
 from typing import Dict, Iterable
 
@@ -14,7 +15,7 @@ try:
 except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
-UA = {"User-Agent": "dollar_watch/3.4.8 (+local research dashboard)"}
+UA = {"User-Agent": "dollar_watch/3.4.23 (+local research dashboard)"}
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -334,6 +335,21 @@ def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataF
 
 TREASURY_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 TREASURY_UPCOMING_AUCTIONS_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/upcoming_auctions"
+TREASURY_CALENDAR_TZ = ZoneInfo("America/New_York")
+
+
+def treasury_calendar_date(now=None):
+    """Return the Treasury/New York calendar date for date-only auction semantics."""
+    if now is None:
+        ts = pd.Timestamp.now(tz="UTC")
+    else:
+        ts = pd.Timestamp(now)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+    return ts.tz_convert(TREASURY_CALENDAR_TZ).date()
+
 
 # FiscalData's auction table contains long-standing legacy spellings (for example
 # announcemt_date) and has changed some display/data-dictionary names over time.
@@ -349,6 +365,8 @@ _AUCTION_ALIASES = {
     "auction_date": ["auction_date"],
     "issue_date": ["issue_date"],
     "reopening": ["reopening"],
+    "inflation_index_security": ["inflation_index_security", "tips"],
+    "floating_rate": ["floating_rate", "frn"],
     "bid_to_cover_ratio": ["bid_to_cover_ratio"],
     "comp_accepted": ["comp_accepted", "competitive_accepted_amt", "competitive_accepted"],
     "total_accepted": ["total_accepted", "total_accepted_amt"],
@@ -398,13 +416,27 @@ def _first_existing(df: pd.DataFrame, aliases: list[str]) -> pd.Series:
     return pd.Series([np.nan] * len(df), index=df.index, dtype="object")
 
 
-def _canonical_coupon_term(original, term, security_type) -> str:
+def _flag_yes(value) -> bool:
+    s=str(value or '').strip().lower()
+    return s in {"yes", "y", "true", "1", "tips", "frn"}
+
+
+def _canonical_coupon_term(original, term, security_type, inflation_index_security=None, floating_rate=None) -> str:
+    """Canonicalize auction tenor without mixing nominal coupons, TIPS, or FRNs.
+
+    FiscalData commonly reports TIPS as security_type Note/Bond and identifies
+    them with inflation_index_security=Yes.  FRNs likewise need the
+    floating_rate flag.  Those flags therefore take precedence over the broad
+    security_type value.
+    """
     raw=(str(original or '')+' '+str(term or '')).strip()
     st=str(security_type or '').lower()
     low=raw.lower()
-    if 'frn' in st or 'floating' in st:
+    is_frn = _flag_yes(floating_rate) or 'frn' in st or 'floating' in st
+    is_tips = _flag_yes(inflation_index_security) or 'tips' in st or 'inflation' in st
+    if is_frn:
         return '2-Year FRN' if ('2' in low or not low) else raw
-    if 'tips' in st or 'inflation' in st:
+    if is_tips:
         m=re.search(r"(\d+)\s*[- ]?year(?:s)?(?:\s+(\d+)\s*[- ]?month)?",low)
         if m:
             yrs=float(m.group(1)) + float(m.group(2) or 0)/12.0
@@ -458,8 +490,15 @@ def _normalize_auction_frame(raw: pd.DataFrame) -> pd.DataFrame:
         out[share] = out[share].where(out[share].notna(), calc)
 
     out["term_key"] = [
-        _canonical_coupon_term(o,t,st)
-        for o,t,st in zip(out["original_security_term"],out["security_term"],out["security_type"])
+        _canonical_coupon_term(o,t,st,tips,frn)
+        for o,t,st,tips,frn in zip(
+            out["original_security_term"], out["security_term"], out["security_type"],
+            out["inflation_index_security"], out["floating_rate"]
+        )
+    ]
+    out["instrument_class"] = [
+        ("TIPS" if str(k).endswith(" TIPS") else "FRN" if str(k).endswith(" FRN") else "BILL" if "bill" in str(st).lower() else "NOMINAL_COUPON")
+        for k,st in zip(out["term_key"], out["security_type"])
     ]
     return out
 
@@ -478,7 +517,7 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
     out = _normalize_auction_frame(pd.DataFrame(data))
     if out.empty:
         return out
-    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    today = pd.Timestamp(treasury_calendar_date())
     # Completed-results channel only. Future placeholders/issue dates never contaminate
     # the historical stress score or freshness clock.
     out = out[(out["auction_date"].notna()) & (out["auction_date"] <= today)]
@@ -486,41 +525,67 @@ def fetch_treasury_auctions(start: str = "2024-01-01", page_size: int = 1000) ->
     return out.sort_values("auction_date", ascending=False).reset_index(drop=True)
 
 
+def _merge_upcoming_auction_frames(dedicated: pd.DataFrame, general: pd.DataFrame) -> pd.DataFrame:
+    """Merge the convenience and general FiscalData calendars without losing TIPS/FRN identity.
+
+    The general auctions_query table is richer because it carries inflation-index and
+    floating-rate flags.  When the same CUSIP/date appears in both sources, prefer that
+    richer classification over a convenience-row label that may only say Note/Bond.
+    """
+    parts=[]
+    if dedicated is not None and not dedicated.empty:
+        d=dedicated.copy(); d["_calendar_source"]="upcoming_auctions"; d["_source_priority"]=1
+        parts.append(d)
+    if general is not None and not general.empty:
+        g=general.copy(); g["_calendar_source"]="auctions_query"; g["_source_priority"]=2
+        parts.append(g)
+    if not parts:
+        return pd.DataFrame()
+    out=pd.concat(parts,ignore_index=True,sort=False)
+    out["auction_date"]=pd.to_datetime(out.get("auction_date"),errors="coerce")
+    cusip=out.get("cusip",pd.Series([None]*len(out),index=out.index)).fillna("").astype(str).str.strip()
+    # CUSIP+date is the identity when available.  Fall back to date+raw type+term only
+    # for rare calendar rows without a CUSIP.
+    fallback=(out["auction_date"].astype(str)+"|"+out.get("security_type","").astype(str)+"|"+out.get("security_term","").astype(str))
+    out["_merge_key"]=out["auction_date"].astype(str)+"|"+cusip
+    out.loc[cusip.eq(""),"_merge_key"]=fallback[cusip.eq("")]
+    out=out.sort_values(["_merge_key","_source_priority"],ascending=[True,False]).drop_duplicates("_merge_key",keep="first")
+    return out.drop(columns=["_merge_key"],errors="ignore").reset_index(drop=True)
+
+
 def fetch_upcoming_treasury_auctions(days: int = 35, page_size: int = 500) -> pd.DataFrame:
     """Fetch upcoming Treasury auctions with a same-source fallback for missing benchmark tenors.
 
     FiscalData's dedicated upcoming table can lag or label reopenings by remaining maturity.
-    V2.9 canonicalizes terms and supplements it from the full auction table's future placeholders,
+    V3.4.23 canonicalizes nominal/TIPS/FRN terms and supplements it from the full auction table's future placeholders,
     without ever feeding those placeholders into historical auction stress.
     """
-    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    today = pd.Timestamp(treasury_calendar_date())
     end = today + pd.Timedelta(days=days)
     params = {
         "filter": f"auction_date:gte:{today.date()},auction_date:lte:{end.date()}",
         "sort": "auction_date",
     }
-    frames=[]
+    dedicated = pd.DataFrame()
+    general = pd.DataFrame()
     try:
         data, _meta = _fiscaldata_pages(TREASURY_UPCOMING_AUCTIONS_URL, params, page_size=page_size, max_pages=5)
-        frames.append(_normalize_auction_frame(pd.DataFrame(data)))
+        dedicated = _normalize_auction_frame(pd.DataFrame(data))
     except Exception:
         pass
-    # Same Treasury/FiscalData source, but the general table often exposes announced future
-    # coupon rows sooner/more completely than the convenience endpoint.
+    # Same Treasury/FiscalData source, but the general auction table carries the richer
+    # inflation-index / FRN flags.  Prefer it for classification when the same announced
+    # CUSIP/date also appears in the convenience endpoint.
     try:
         data2,_meta2=_fiscaldata_pages(TREASURY_AUCTIONS_URL,params,page_size=page_size,max_pages=5)
-        frames.append(_normalize_auction_frame(pd.DataFrame(data2)))
+        general = _normalize_auction_frame(pd.DataFrame(data2))
     except Exception:
         pass
-    frames=[x for x in frames if x is not None and not x.empty]
-    if not frames:
-        return pd.DataFrame()
-    out=pd.concat(frames,ignore_index=True,sort=False)
+    out = _merge_upcoming_auction_frames(dedicated, general)
+    if out.empty:
+        return out
     out["auction_date"]=pd.to_datetime(out["auction_date"],errors="coerce")
     out=out[(out["auction_date"]>=today)&(out["auction_date"]<=end)]
-    dedupe=[c for c in ["auction_date","term_key","cusip"] if c in out.columns]
-    if dedupe:
-        out=out.drop_duplicates(subset=dedupe,keep="first")
     return out.sort_values("auction_date").reset_index(drop=True)
 
 
@@ -533,6 +598,7 @@ def summarize_auction_stress(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:
     if df.empty or "term_key" not in df.columns:
         return pd.DataFrame(), 0.0
     major = ["2-Year", "3-Year", "5-Year", "7-Year", "10-Year", "20-Year", "30-Year"]
+    # term_key explicitly excludes TIPS and FRNs from nominal-coupon stress.
     rows = []
     stress_values = []
     for term in major:
@@ -586,7 +652,7 @@ def summarize_auction_stress(df: pd.DataFrame) -> tuple[pd.DataFrame, float]:
 def summarize_upcoming_auctions(df: pd.DataFrame, days: int = 21) -> pd.DataFrame:
     if df is None or df.empty or "auction_date" not in df.columns:
         return pd.DataFrame()
-    today = pd.Timestamp.now(tz=None).normalize()
+    today = pd.Timestamp(treasury_calendar_date())
     end = today + pd.Timedelta(days=days)
     d = df.copy()
     d["auction_date"] = pd.to_datetime(d["auction_date"], errors="coerce").dt.tz_localize(None)
@@ -596,7 +662,7 @@ def summarize_upcoming_auctions(df: pd.DataFrame, days: int = 21) -> pd.DataFram
     major = ["2-Year", "3-Year", "5-Year", "7-Year", "10-Year", "20-Year", "30-Year"]
     if "term_key" in d.columns:
         d = d[d["term_key"].astype(str).isin(major)]
-    cols = [c for c in ["announcement_date","auction_date","issue_date","term_key","security_type","reopening","cusip"] if c in d.columns]
+    cols = [c for c in ["announcement_date","auction_date","issue_date","term_key","instrument_class","security_type","inflation_index_security","floating_rate","reopening","cusip","_calendar_source"] if c in d.columns]
     return d[cols].sort_values("auction_date").drop_duplicates(subset=[c for c in ["auction_date","term_key","cusip"] if c in cols])
 
 def market_snapshot() -> dict:

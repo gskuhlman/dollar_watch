@@ -6,14 +6,16 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .evidence import classify_source
-from .run_history import lineage, APP_VERSION, SCHEMA_VERSION
+from .evidence import classify_source, canonical_verification_label, summarize_verification_records, temporal_claim_source_mismatch
+from .run_history import lineage, APP_VERSION, SCHEMA_VERSION, fixed_horizon_query_windows
+from .paths import database_path, backups_dir, ensure_runtime_dirs
+from .db_migrations import apply_migrations, applied_versions
 
 
 def db_path() -> str:
-    p = os.getenv("DOLLAR_DASHBOARD_DB", "data/dashboard.sqlite")
-    Path(p).parent.mkdir(parents=True, exist_ok=True)
-    return p
+    """Absolute path to the persistent runtime SQLite database."""
+    ensure_runtime_dirs()
+    return str(database_path())
 
 
 def _columns(con, table: str) -> set[str]:
@@ -75,8 +77,21 @@ def _ensure_verification_checks(con) -> None:
 
 
 def connect():
-    con = sqlite3.connect(db_path())
+    """Open the persistent database and migrate it in place.
+
+    Release ZIPs never ship the /data directory.  Schema instructions live in
+    /database/migrations and are applied to the existing SQLite file here.
+    """
+    ensure_runtime_dirs()
+    path=database_path()
+    con = sqlite3.connect(str(path))
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA foreign_keys=ON")
+    apply_migrations(con, path, APP_VERSION)
+
+    # Compatibility repair for databases created by pre-migration releases.  The
+    # first V3.4.23 startup has pending migrations and therefore creates a backup
+    # before this block can alter an existing legacy schema.
     con.execute("""
         CREATE TABLE IF NOT EXISTS snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,7 +132,42 @@ def connect():
     _ensure_events(con)
     _ensure_verification_checks(con)
     _ensure_verification_queue(con)
+    con.commit()
     return con
+
+
+def database_status() -> dict:
+    """Return operator-visible persistent-database health and migration metadata."""
+    ensure_runtime_dirs()
+    path=database_path()
+    status={
+        "database_path": str(path),
+        "exists": path.exists(),
+        "size_bytes": int(path.stat().st_size) if path.exists() else 0,
+        "snapshot_count": 0,
+        "oldest_snapshot": None,
+        "newest_snapshot": None,
+        "database_migration_version": 0,
+        "last_backup": None,
+    }
+    try:
+        con=connect()
+        row=con.execute("SELECT COUNT(*), MIN(captured_at), MAX(captured_at) FROM snapshots").fetchone()
+        if row:
+            status["snapshot_count"]=int(row[0] or 0)
+            status["oldest_snapshot"]=row[1]
+            status["newest_snapshot"]=row[2]
+        status["database_migration_version"]=max(applied_versions(con) or {0})
+        con.close()
+    except Exception as exc:
+        status["error"]=str(exc)
+    try:
+        backups=sorted(backups_dir().glob("dashboard_pre_*.sqlite"), key=lambda x:x.stat().st_mtime, reverse=True)
+        if backups:
+            status["last_backup"]=str(backups[0])
+    except Exception:
+        pass
+    return status
 
 
 def save_snapshot(payload: dict, run_kind: str = "ANALYSIS") -> int:
@@ -170,6 +220,64 @@ def recent_snapshots(limit: int = 50) -> list[dict]:
         out.append(d)
     return out
 
+
+
+
+def snapshots_for_fixed_horizons(current_snapshot: dict) -> list[dict]:
+    """Fetch only snapshots near the six fixed analytical targets.
+
+    This deliberately avoids a "last N runs" lookup so frequent same-day runs
+    can never crowd the 3M/6M/1Y references out of history.
+    """
+    con=connect(); rows_by_id={}
+    for w in fixed_horizon_query_windows(current_snapshot):
+        rows=con.execute(
+            "SELECT id,captured_at,payload,run_id,parent_run_id,app_version,schema_version,run_kind "
+            "FROM snapshots WHERE captured_at >= ? AND captured_at <= ? ORDER BY captured_at",
+            (w["start_timestamp"], w["end_timestamp"]),
+        ).fetchall()
+        for row in rows:
+            rows_by_id[row[0]]=row
+    con.close(); out=[]
+    for rid,captured,payload,run_id,parent_run_id,app_version,schema_version,run_kind in rows_by_id.values():
+        d=json.loads(payload)
+        legacy = not bool(run_id and app_version and schema_version)
+        d["_id"]=rid; d["_captured_at"]=captured
+        d["_run_id"]=run_id or f"legacy-{rid}"
+        d["_parent_run_id"]=parent_run_id
+        d["_app_version"]=app_version or "LEGACY"
+        d["_schema_version"]=schema_version or "LEGACY"
+        d["_run_kind"]="LEGACY_BASELINE" if legacy else (run_kind or "ANALYSIS")
+        d["_legacy_lineage"]=legacy
+        out.append(d)
+    return out
+
+def snapshots_since_days(days: int = 400, limit: int = 10000) -> list[dict]:
+    """Return snapshots captured within a bounded historical window.
+
+    Used for fixed-horizon comparisons so 1Y analysis does not depend on how
+    many times the dashboard happened to run recently.
+    """
+    con = connect()
+    rows = con.execute(
+        "SELECT id,captured_at,payload,run_id,parent_run_id,app_version,schema_version,run_kind "
+        "FROM snapshots WHERE julianday(captured_at) >= julianday('now', ?) "
+        "ORDER BY id DESC LIMIT ?",
+        (f"-{int(days)} days", int(limit)),
+    ).fetchall()
+    con.close(); out=[]
+    for rid,captured,payload,run_id,parent_run_id,app_version,schema_version,run_kind in rows:
+        d=json.loads(payload)
+        legacy = not bool(run_id and app_version and schema_version)
+        d["_id"]=rid; d["_captured_at"]=captured
+        d["_run_id"]=run_id or f"legacy-{rid}"
+        d["_parent_run_id"]=parent_run_id
+        d["_app_version"]=app_version or "LEGACY"
+        d["_schema_version"]=schema_version or "LEGACY"
+        d["_run_kind"]="LEGACY_BASELINE" if legacy else (run_kind or "ANALYSIS")
+        d["_legacy_lineage"]=legacy
+        out.append(d)
+    return out
 
 def get_overrides(defaults: dict[str, float]) -> dict[str, dict]:
     con = connect()
@@ -234,7 +342,7 @@ def save_verification_check(claim: str, bucket: str, source_url: str, verdict: s
     qreason="" if qstatus=="ACTIVE" else "Source did not pass semantic relevance gate"
     cur=con.execute(
         "INSERT INTO verification_checks(created_at,claim,bucket,source_url,source_tier,verdict,explanation,model,provenance,relevance_score,relevance_status,quarantine_status,quarantine_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (datetime.now(timezone.utc).isoformat(),claim,bucket,source_url,tier,verdict,explanation,model,"LLM-ASSISTED",relevance_score,rel,qstatus,qreason),
+        (datetime.now(timezone.utc).isoformat(),claim,bucket,source_url,tier,canonical_verification_label(verdict),explanation,model,"LLM-ASSISTED",relevance_score,rel,qstatus,qreason),
     )
     con.commit(); rid=int(cur.lastrowid); con.close(); return rid
 
@@ -247,6 +355,25 @@ def recent_verification_checks(limit: int = 100, include_quarantined: bool = Fal
     ).fetchall(); con.close()
     keys=["id","created_at","claim","bucket","source_url","source_tier","verdict","explanation","model","provenance","relevance_score","relevance_status","quarantine_status","quarantine_reason"]
     return [dict(zip(keys,r)) for r in rows]
+
+
+def verification_check_summary_full(include_quarantined: bool = False) -> dict:
+    """Full-population persisted-check accounting; detail lists may remain capped separately."""
+    con=connect(); _ensure_verification_checks(con); _ensure_verification_queue(con); _sync_verification_quarantine(con); con.commit()
+    where="" if include_quarantined else "WHERE COALESCE(quarantine_status,'ACTIVE') <> 'QUARANTINED'"
+    rows=con.execute(f"SELECT claim,verdict,relevance_status,quarantine_status FROM verification_checks {where}").fetchall(); con.close()
+    keys=["claim","verdict","relevance_status","quarantine_status"]
+    return summarize_verification_records([dict(zip(keys,r)) for r in rows], scope="ALL_PERSISTED_SOURCE_CHECKS" if include_quarantined else "ALL_ACTIVE_PERSISTED_SOURCE_CHECKS", complete=True)
+
+
+def verification_queue_summary_full() -> dict:
+    """Full-population queue accounting with verdict, workflow-status and relevance kept separate."""
+    con=connect(); _ensure_verification_queue(con)
+    rows=con.execute("SELECT claim,status,relevance_status,llm_verdict,structured_fact FROM verification_queue").fetchall(); con.close()
+    keys=["claim","status","relevance_status","llm_verdict","structured_fact"]
+    out=summarize_verification_records([dict(zip(keys,r)) for r in rows], scope="ALL_VERIFICATION_QUEUE_ROWS", complete=True)
+    out["structured_verified_count"]=int((out.get("status_counts") or {}).get("STRUCTURED_VERIFIED",0))
+    return out
 
 
 def recent_quarantined_verification_checks(limit: int = 100) -> list[dict]:
@@ -342,7 +469,42 @@ def _sync_verification_quarantine(con) -> int:
                 OR COALESCE(vq.status,'')='IRRELEVANT_SOURCE'
          )
     """)
-    return int(cur.rowcount or 0)
+    changed=int(cur.rowcount or 0)
+
+    # V3.4.18: quarantine legacy SUPPORTED checks where the stored source URL and/or verifier explanation
+    # reveals that the source supports a different explicit month/quarter than the claim.
+    # This repairs already-persisted period mismatches (for example an August claim that
+    # was accidentally supported by a July source) without treating the source as irrelevant.
+    rows=con.execute("""
+        SELECT id,claim,source_url,explanation FROM verification_checks
+         WHERE upper(COALESCE(verdict,''))='SUPPORTED'
+           AND COALESCE(quarantine_status,'ACTIVE') <> 'QUARANTINED'
+    """).fetchall()
+    for rid,claim,source_url,explanation in rows:
+        audit=temporal_claim_source_mismatch(str(claim or ''),str(source_url or '')+"\n"+str(explanation or ''))
+        if audit.get('mismatch'):
+            con.execute("""UPDATE verification_checks
+                              SET quarantine_status='QUARANTINED',
+                                  quarantine_reason='SUPPORTED verdict failed deterministic temporal-consistency audit; claim period differs from verifier-described source period'
+                            WHERE id=?""",(int(rid),))
+            changed+=1
+
+    # Keep the queue accounting aligned with the persisted evidence population.  A period
+    # mismatch is INCONCLUSIVE, not CONTRADICTED: the source may be true for another month.
+    qrows=con.execute("""
+        SELECT id,claim,candidate_url,llm_explanation FROM verification_queue
+         WHERE upper(COALESCE(llm_verdict,''))='SUPPORTED'
+    """).fetchall()
+    for qid,claim,candidate_url,explanation in qrows:
+        audit=temporal_claim_source_mismatch(str(claim or ''),str(candidate_url or '')+"\n"+str(explanation or ''))
+        if audit.get('mismatch'):
+            prefix='[TEMPORAL_GATE_DOWNGRADE] Claim/source period mismatch; prior SUPPORTED verdict downgraded to INCONCLUSIVE. '
+            con.execute("""UPDATE verification_queue
+                              SET llm_verdict='INCONCLUSIVE',
+                                  llm_explanation=?
+                            WHERE id=?""",(prefix+str(explanation or ''),int(qid)))
+            changed+=1
+    return changed
 
 
 def upsert_verification_queue(rows: list[dict]) -> int:
@@ -371,7 +533,8 @@ def recent_verification_queue(limit:int=100) -> list[dict]:
 
 def update_verification_queue_check(queue_id:int,candidate_url:str='',candidate_tier:str='',verdict:str='',explanation:str='',status:str='CHECKED',candidate_relevance:float|None=None,relevance_status:str='') -> None:
     con=connect(); _ensure_verification_queue(con)
-    con.execute("UPDATE verification_queue SET updated_at=?,candidate_url=?,candidate_tier=?,candidate_relevance=?,relevance_status=?,llm_verdict=?,llm_explanation=?,status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),candidate_url,candidate_tier,candidate_relevance,relevance_status,verdict,explanation,status,int(queue_id))); con.commit(); con.close()
+    canon_verdict=canonical_verification_label(verdict) if str(verdict or "").strip() else ""
+    con.execute("UPDATE verification_queue SET updated_at=?,candidate_url=?,candidate_tier=?,candidate_relevance=?,relevance_status=?,llm_verdict=?,llm_explanation=?,status=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),candidate_url,candidate_tier,candidate_relevance,relevance_status,canon_verdict,explanation,status,int(queue_id))); con.commit(); con.close()
 
 
 def update_verification_queue_approval(queue_id:int,approved_status:str) -> None:

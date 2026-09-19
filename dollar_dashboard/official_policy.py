@@ -11,14 +11,16 @@ from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+
+from .paths import policy_cache_path, ensure_runtime_dirs
 from urllib.parse import urljoin
 
 import requests
 
 UA_VARIANTS=[
-    {"User-Agent":"dollar_watch/3.4.8 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
+    {"User-Agent":"dollar_watch/3.4.23 (+local research dashboard; official-source collector)","Accept-Language":"en-US,en;q=0.9,ja;q=0.7"},
     {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36","Accept-Language":"en-US,en;q=0.9"},
-    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4.8; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
+    {"User-Agent":"Mozilla/5.0 (compatible; dollar_watch/3.4.23; +https://openai.com/)","Accept-Language":"en-US,en;q=0.9"},
 ]
 UA=UA_VARIANTS[0]
 
@@ -96,9 +98,8 @@ class _Links(HTMLParser):
 
 
 def _cache_path()->Path:
-    p=Path(os.getenv("DOLLAR_POLICY_CACHE","data/official_policy_cache.json"))
-    p.parent.mkdir(parents=True,exist_ok=True)
-    return p
+    ensure_runtime_dirs()
+    return policy_cache_path()
 
 
 def _load_cache()->dict:

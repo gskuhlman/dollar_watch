@@ -83,7 +83,16 @@ def _verified_overrides(overrides: dict[str, dict]) -> tuple[dict[str, float], d
     return out, audit
 
 
-def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict]) -> dict:
+def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict], *, as_of: datetime | None = None) -> dict:
+    """Score recorded inputs. `as_of` freezes time-dependent evidence-age logic for
+    point-in-time historical replay; live calls retain the previous real-time behavior.
+    """
+    if as_of is None:
+        as_of = datetime.now(timezone.utc)
+    elif as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    else:
+        as_of = as_of.astimezone(timezone.utc)
     m = snapshot.get("market_summary", {})
     f = snapshot.get("fred_summary", {})
     n = news_classification.get("scores", {})
@@ -121,12 +130,18 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             direction=float(ev.get("effect_direction") or 0); weight=float(ev.get("effect_weight") or 0)
         except Exception:
             direction=weight=0.0
-        # Direct U.S. intervention status is already scored from the structured NY Fed field below;
-        # do not double count the same quarterly fact from its canonical statement row.
-        contribution=0.0 if action_class=="US_DIRECT_FX_INTERVENTION" else max(-4.0,min(4.0,direction*weight*0.25))
+        # Direct U.S. intervention status is already represented by the richer structured
+        # NY Fed field below.  The canonical statement validator checks the same Q2 fact,
+        # so keeping both rows would double-count the evidence record even though scoring
+        # itself is not double-counted.  Skip that duplicate in the analyst-facing evidence
+        # population and retain the structured quarter-tagged row below.
+        if action_class=="US_DIRECT_FX_INTERVENTION":
+            continue
+        contribution=max(-4.0,min(4.0,direction*weight*0.25))
         if contribution:
             deterministic_target_net[target]=deterministic_target_net.get(target,0.0)+contribution
         deterministic_evidence_rows.append({
+            "fact_key":f"{action_class}|{ev.get('final_url') or ev.get('source_url')}|{ev.get('claim')}",
             "bucket":ev.get("bucket"),"claim":ev.get("claim"),"source_url":ev.get("final_url") or ev.get("source_url"),
             "source_tier":"PRIMARY","action_class":action_class,"effect_target":target,"effect_direction":direction,
             "effect_weight":weight,"evidence_class":"DETERMINISTIC_VERIFIED","deterministic_validation":ev.get("deterministic_validation"),
@@ -150,7 +165,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         age_days=999.0
         try:
             end=datetime.fromisoformat(str(jp_fx.get("period_end"))).replace(tzinfo=timezone.utc)
-            age_days=(datetime.now(timezone.utc)-end).total_seconds()/86400.0
+            age_days=(as_of-end).total_seconds()/86400.0
         except Exception:
             pass
         direction=str(jp_fx.get("direction") or "UNKNOWN").upper()
@@ -166,19 +181,22 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     # entries mirror mechanical effects already applied above/below and therefore are not re-added.
     if jp_fx.get("ok") and jp_fx.get("intervention_occurred"):
         deterministic_evidence_rows.append({
+            "fact_key":f"JP_MOF_INTERVENTION|{jp_fx.get('period_start')}|{jp_fx.get('period_end')}",
             "bucket":"FX intervention","claim":f"Japan MOF reported intervention totaling approximately ¥{_safe(jp_fx.get('amount_trillion_yen'),0):.4f} trillion for the stated monthly window.",
             "source_url":jp_fx.get("source_url"),"source_tier":"PRIMARY","action_class":"BILATERAL_FX_INTERVENTION",
             "effect_target":"fx_positioning_squeeze","effect_direction":1,"effect_weight":japan_fx_catalyst,
             "evidence_class":"DETERMINISTIC_VERIFIED","score_contribution":round(japan_fx_catalyst,1),
-            "direction":jp_fx.get("direction","UNKNOWN"),"fetch_mode":jp_fx.get("fetch_mode"),
+            "direction":jp_fx.get("direction","UNKNOWN"),"period_start":jp_fx.get("period_start"),"period_end":jp_fx.get("period_end"),
+            "fetch_mode":jp_fx.get("fetch_mode"),
         })
     if us_fx.get("ok") and us_fx.get("finding")=="NO_US_FX_INTERVENTION":
         deterministic_evidence_rows.append({
+            "fact_key":f"US_DIRECT_FX_INTERVENTION|{us_fx.get('period')}",
             "bucket":"FX intervention","claim":"NY Fed official reporting found no direct Federal Reserve or U.S. Treasury FX intervention in the current reported quarter.",
             "source_url":us_fx.get("source_url"),"source_tier":"PRIMARY","action_class":"US_DIRECT_FX_INTERVENTION",
             "effect_target":"managed_devaluation","effect_direction":-1,"effect_weight":abs(us_direct_fx_counterevidence),
             "evidence_class":"DETERMINISTIC_VERIFIED","score_contribution":round(us_direct_fx_counterevidence,1),
-            "fetch_mode":us_fx.get("fetch_mode"),
+            "period":us_fx.get("period"),"fetch_mode":us_fx.get("fetch_mode"),
         })
 
     market_conf = _conf(snapshot, "market")
@@ -256,11 +274,17 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         pct=_safe(row.get("leveraged_3y_percentile"),None)
         net=_safe(row.get("leveraged_net"),None)
         weekly=_safe(row.get("leveraged_weekly_change"),None)
+        crowding_state=str(row.get("leveraged_crowding_state") or "")
         rd=row.get("report_date")
         if rd: report_dates.append(str(rd)[:10])
         if market in {"Japanese Yen","Euro FX","Swiss Franc"} and pct is not None and net is not None and weekly is not None:
             if pct <= 30 and net < 0 and weekly > 0:
-                foreign_cover_signals.append({"market":market,"weekly_change":weekly,"percentile":pct})
+                foreign_cover_signals.append({
+                    "market":market,
+                    "weekly_change":weekly,
+                    "percentile":pct,
+                    "crowding_state":crowding_state or ("CROWDED_SHORT" if pct <= 20 else "ELEVATED_SHORT"),
+                })
         elif market=="Dollar Index" and pct is not None and net is not None and weekly is not None:
             if pct >= 70 and net > 0 and weekly < 0:
                 dxy_liquidation=True
@@ -269,7 +293,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
     if latest_cftc_report:
         try:
             rd=datetime.fromisoformat(latest_cftc_report).replace(tzinfo=timezone.utc)
-            cftc_report_age_days=(datetime.now(timezone.utc)-rd).total_seconds()/86400.0
+            cftc_report_age_days=(as_of-rd).total_seconds()/86400.0
         except Exception:
             pass
     if cftc_report_age_days is not None and cftc_report_age_days > 10:
@@ -290,7 +314,7 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
             latest_expected_cftc_publication = str((_rd + pd.Timedelta(days=3)).date())
             next_cftc_asof = str((_rd + pd.Timedelta(days=7)).date())
             next_expected_cftc_publication = str((_rd + pd.Timedelta(days=10)).date())
-            _today = pd.Timestamp.now(tz="UTC").date()
+            _today = as_of.date()
             _latest_pub = (_rd + pd.Timedelta(days=3)).date()
             _next_asof = (_rd + pd.Timedelta(days=7)).date()
             if _today < _latest_pub:
@@ -317,6 +341,34 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "dxy_long_liquidation_observed":bool(dxy_liquidation),
         "note":"CFTC report_date is the Tuesday position-as-of date, not the public release date. The latest expected publication is normally Friday (+3 days); the next position as-of is normally the following Tuesday (+7) and its expected publication the following Friday (+10). Holiday shifts are possible. Spot moves can be consistent with short-covering, but CONFIRMED requires newer report-over-report shrinkage in at least two crowded foreign-currency shorts.",
     }
+
+    # Descriptive companion to the intervention's generic FX mechanics. The same
+    # yen-buying event has different positioning implications when the latest
+    # observed CFTC crowd is LONG JPY rather than SHORT JPY. This does not alter
+    # the macro risk score, confirmation criteria, or unknown intervention direction.
+    jpy_row = next((r for r in cftc_rows if str(r.get("market") or "") == "Japanese Yen"), {})
+    jpy_state = str(jpy_row.get("leveraged_crowding_state") or "UNKNOWN")
+    jpy_positioning_context = {
+        "observed_crowding_state": jpy_state,
+        "position_asof_date": str(jpy_row.get("report_date") or "")[:10] or None,
+        "intervention_direction_status": str(jp_fx.get("direction") or "UNKNOWN"),
+        "basis": "CFTC positioning is an as-of observation; intervention direction is independent and must not be inferred from policy rhetoric or monthly totals.",
+    }
+    if jpy_state == "CROWDED_LONG":
+        jpy_positioning_context.update({
+            "JPY_BUY_FX_SELL": "Supports JPY and its currently crowded longs; not evidence of an active crowded-JPY-short squeeze. Remaining shorts may still lose, but do not present them as today's crowded leg.",
+            "JPY_SELL_FX_BUY": "Weakens JPY and can pressure currently crowded JPY longs or prompt long liquidation; this is a conditional risk, not an observed liquidation or verified intervention direction.",
+        })
+    elif jpy_state == "CROWDED_SHORT":
+        jpy_positioning_context.update({
+            "JPY_BUY_FX_SELL": "Supports JPY and can pressure currently crowded JPY shorts or intensify short covering; only CFTC report-over-report changes can confirm actual covering.",
+            "JPY_SELL_FX_BUY": "Weakens JPY and tends to favor the currently crowded JPY shorts; works against that short-covering catalyst.",
+        })
+    else:
+        jpy_positioning_context.update({
+            "JPY_BUY_FX_SELL": "Supports JPY and pressures remaining shorts; do not infer a crowded JPY short from this position state.",
+            "JPY_SELL_FX_BUY": "Weakens JPY and pressures JPY longs; do not infer a crowded JPY long from this position state.",
+        })
 
     tic_pressure = _eff(tic_raw, tic_conf)
     cofer_pressure = _eff(cofer_raw, cofer_conf)
@@ -614,7 +666,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "direct_intervention_fact_coverage":round(structured_direct_coverage,1),
         "deterministic_policy_context_coverage":round(deterministic_policy_context_coverage,1),
         "human_approved_interpretive_coverage":round(policy_queue_critical,1),
+        # Backward-compatible bool: True means this regime REQUIRES the human intent gate.
+        # The explicit status below prevents prose models from calling an unsatisfied gate "open".
         "broad_intent_human_gate":True,
+        "broad_intent_human_gate_status":"SATISFIED" if policy_queue_critical > 0 else "UNSATISFIED",
     })
     regime_coverage_details["Dollar funding squeeze"].update({
         "domestic_funding_coverage": round(_clamp(0.90*fred_conf*100 + 0.10*market_conf*100),1),
@@ -628,6 +683,20 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "offshore_coverage_pct": round(offshore_funding_coverage,1),
         "safe_label": "Observed domestic funding indicators calm; offshore confirmation incomplete" if offshore_funding_coverage < 70 else "Observed funding indicators broadly covered",
         "language_rule": "Do not describe global dollar funding as benign/clean when offshore coverage is below 70%. State that observed domestic indicators do not confirm stress and name the offshore cross-currency-basis/FX-swap gap." if offshore_funding_coverage < 70 else "Broad funding language is permitted subject to individual source freshness.",
+    }
+
+    deterministic_action_counts={}
+    deterministic_fact_keys=[]
+    for _ev in deterministic_evidence_rows:
+        _ac=str(_ev.get("action_class") or "UNKNOWN")
+        deterministic_action_counts[_ac]=deterministic_action_counts.get(_ac,0)+1
+        deterministic_fact_keys.append(str(_ev.get("fact_key") or ""))
+    deterministic_evidence_summary={
+        "total_unique_facts":len(deterministic_evidence_rows),
+        "action_class_counts":deterministic_action_counts,
+        "fact_keys":deterministic_fact_keys,
+        "duplicate_fact_keys_present":len([k for k in deterministic_fact_keys if k]) != len(set(k for k in deterministic_fact_keys if k)),
+        "counting_policy":"Count analyst-facing deterministic_verified_evidence rows only. canonical_statements may include validator representations of the same structured fact and must not be added again.",
     }
 
     return {
@@ -662,8 +731,15 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict])
         "fed_treasury_classification": snapshot.get("fed_treasury_classification", {}),
         "approved_policy_evidence": approved_evidence_rows,
         "deterministic_verified_evidence": deterministic_evidence_rows,
+        "deterministic_evidence_summary": deterministic_evidence_summary,
         "observed_position_unwind": observed_position_unwind,
         "funding_observation_scope": funding_observation_scope,
+        "fx_intervention_positioning_context": jpy_positioning_context,
+        "fx_intervention_direction_semantics": {
+            "JPY_BUY_FX_SELL":"Supports/strengthens JPY and tends to lower USDJPY; adverse to short-JPY positioning and can intensify a short-JPY squeeze, all else equal.",
+            "JPY_SELL_FX_BUY":"Weakens JPY and tends to raise USDJPY; favorable to short-JPY positioning and reduces/works against a JPY-short squeeze catalyst, all else equal.",
+            "UNKNOWN":"Do not infer either directional effect until currencies bought/sold are verified.",
+        },
         "policy_evidence_model": {
             "DETERMINISTIC_VERIFIED":"Exact official facts that pass domain-specific deterministic validation. Automatically admissible for coverage and tightly bounded mechanical scoring; no motive inference.",
             "HUMAN_APPROVED_INTERPRETATION":"Source-relevant SUPPORTED interpretive claims explicitly approved by the user. Eligible for the full bounded intent/motive-sensitive effect.",

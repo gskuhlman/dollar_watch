@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 import math
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 
 def _safe(v, default=None):
@@ -56,21 +57,35 @@ def _asof(snapshot: dict, rows: list[dict]) -> pd.Timestamp:
     return (max(dates) + pd.Timedelta(days=1)) if dates else pd.Timestamp.now(tz="UTC")
 
 
+TREASURY_CALENDAR_TZ = ZoneInfo("America/New_York")
+
+
+def _treasury_date(ts) -> object:
+    x=pd.Timestamp(ts)
+    if x.tzinfo is None:
+        x=x.tz_localize("UTC")
+    return x.tz_convert(TREASURY_CALENDAR_TZ).date()
+
+
 def _next_auction(snapshot: dict, term: str, asof: pd.Timestamp) -> pd.Timestamp | pd.NaT:
+    """Return the next auction for the same *nominal* benchmark tenor.
+
+    Do not number-match a 10-Year TIPS reopening to the nominal 10-Year note,
+    or a 2-Year FRN to the nominal 2-Year note.  Current upcoming-auction rows
+    carry canonical term_key values; exact canonical matching is intentional.
+    """
     dates=[]
+    want=str(term).strip().lower()
     for row in snapshot.get("upcoming_auctions", []) or []:
         key=str(row.get("term_key") or row.get("security_term") or row.get("term") or "").strip().lower()
-        want=str(term).strip().lower()
-        import re
-        key_num=(re.search(r"(\d+)\s*[- ]?year",key) or re.search(r"^(\d+)$",key))
-        want_num=(re.search(r"(\d+)\s*[- ]?year",want) or re.search(r"^(\d+)$",want))
-        if key_num and want_num:
-            if key_num.group(1) != want_num.group(1): continue
-        elif key != want:
+        instrument=str(row.get("instrument_class") or "").strip().upper()
+        if instrument in {"TIPS", "FRN"} or "tips" in key or "frn" in key:
             continue
-        d=pd.to_datetime(row.get("auction_date"), errors="coerce", utc=True)
-        if pd.notna(d) and d >= asof.normalize():
-            dates.append(d)
+        if key != want:
+            continue
+        d=pd.to_datetime(row.get("auction_date"), errors="coerce")
+        if pd.notna(d) and d.date() >= _treasury_date(asof):
+            dates.append(pd.Timestamp(d.date()))
     return min(dates) if dates else pd.NaT
 
 
@@ -80,7 +95,11 @@ def _auction_lifecycle(snapshot: dict, row: dict | None, term: str, asof: pd.Tim
     d=pd.to_datetime(row.get("auction_date"), errors="coerce", utc=True)
     if pd.isna(d):
         return {"age_days": None, "next_auction": None, "days_to_next": None, "effect_weight": 0.0, "lifecycle": "NO_DATE"}
-    age=max(0.0, (asof-d).total_seconds()/86400.0)
+    # Auction dates are date-only Treasury/New York calendar events.  Do not let
+    # UTC midnight make a U.S. auction look one day older/newer during the prior evening.
+    asof_date=_treasury_date(asof)
+    auction_date=pd.Timestamp(d).date()
+    age=max(0.0, float((asof_date-auction_date).days))
     if age <= 7: weight=1.0; life="FRESH"
     elif age <= 14: weight=0.70; life="AGING"
     elif age <= 21: weight=0.40; life="AGING"
@@ -88,8 +107,8 @@ def _auction_lifecycle(snapshot: dict, row: dict | None, term: str, asof: pd.Tim
     nxt=_next_auction(snapshot,term,asof)
     days_to=None
     if pd.notna(nxt):
-        days_to=(nxt-asof).total_seconds()/86400.0
-        if -0.5 <= days_to <= 3.5:
+        days_to=float((pd.Timestamp(nxt).date()-asof_date).days)
+        if 0 <= days_to <= 3:
             life="PENDING_REPLACEMENT"
             weight=min(weight,0.40)
     return {

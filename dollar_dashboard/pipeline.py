@@ -7,14 +7,14 @@ import pandas as pd
 
 from .data import (
     fetch_market_history, fetch_fred_bundle, fetch_treasury_auctions, fetch_upcoming_treasury_auctions,
-    summarize_auction_stress, summarize_upcoming_auctions, summarize_offshore_fx_forward_proxy,
+    summarize_auction_stress, summarize_upcoming_auctions, summarize_offshore_fx_forward_proxy, treasury_calendar_date,
 )
 from .intelligence import (
     fetch_cftc_tff, summarize_cftc_fx, summarize_fx_positioning_squeeze,
     fetch_tic_major_holders, summarize_tic, summarize_tic_transactions,
     fetch_stablecoins, summarize_stablecoins,
     fetch_imf_cofer_usd_share, summarize_cofer,
-    build_data_health, period_last_date,
+    build_data_health, period_last_date, collect_tic_components_independent,
 )
 from .fiscal import fetch_fiscal_pipeline
 from .news import fetch_news
@@ -158,19 +158,9 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["fx_positioning_squeeze"] = 0.0; bundle["fx_positioning_squeeze_reasons"] = []
         status["CFTC FX positioning"] = {"ok": False, "weight": 1.0, "error": str(e)}
 
-    try:
-        tic = fetch_tic_major_holders()
-        tic_summary, tic_pressure, tic_meta = summarize_tic(tic)
-        bundle["tic"] = tic; bundle["tic_summary"] = tic_summary; bundle["tic_pressure"] = tic_pressure; bundle["tic_meta"] = tic_meta
-        bundle["tic_transaction_meta"] = summarize_tic_transactions(bundle.get("fred_hist", pd.DataFrame()))
-        last = tic["date"].max() if not tic.empty and "date" in tic else None
-        status["TIC country Treasury holdings"] = {"ok": not tic_summary.empty, "weight": 1.1, "last_date": last, "notes": "Monthly; structurally lagged and confidence-weighted before scoring"}
-        tx_date = pd.to_datetime((bundle.get("tic_transaction_meta",{}).get("grand_total",{}) or {}).get("date"), errors="coerce", utc=True)
-        status["TIC Treasury transactions / valuation"] = {"ok": bool(bundle.get("tic_transaction_meta")), "weight": 1.0, "last_date": tx_date, "notes": "Active net transactions are separated from position changes, LT valuation and residual/custody effects."}
-    except Exception as e:
-        bundle["tic"] = pd.DataFrame(); bundle["tic_summary"] = pd.DataFrame(); bundle["tic_pressure"] = 0.0; bundle["tic_meta"] = {}; bundle["tic_transaction_meta"] = {}
-        status["TIC country Treasury holdings"] = {"ok": False, "weight": 1.1, "error": str(e)}
-        status["TIC Treasury transactions / valuation"] = {"ok": False, "weight": 1.0, "error": str(e)}
+    tic_bundle, tic_status = collect_tic_components_independent(bundle.get("fred_hist", pd.DataFrame()))
+    bundle.update(tic_bundle)
+    status.update(tic_status)
 
     try:
         cofer = fetch_imf_cofer_usd_share()
@@ -282,6 +272,12 @@ def collect_live_bundle() -> dict[str, Any]:
         "auction_stress_auto": float(bundle.get("auction_stress", 0) or 0),
         "auction_summary": _records(bundle.get("auction_summary", pd.DataFrame())),
         "upcoming_auctions": _records(bundle.get("upcoming_auctions", pd.DataFrame())),
+        "treasury_auction_calendar_meta": {
+            "timezone": "America/New_York",
+            "calendar_asof_date": treasury_calendar_date().isoformat(),
+            "future_rows_scope": "NOMINAL_COUPON_ONLY",
+            "tips_frn_are_replacements": False,
+        },
         "cftc_usd_downside_pressure": float(bundle.get("cftc_pressure", 0) or 0),
         "cftc_summary": _records(bundle.get("cftc_summary", pd.DataFrame())),
         "fx_positioning_squeeze_risk": float(bundle.get("fx_positioning_squeeze", 0) or 0),

@@ -26,7 +26,7 @@ def test_q1_style_absorption_and_negative_mmf_preserved():
         'Commercial bank deposits':pd.Series([18500,18952,19083,19409],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
         'Bank Treasury + agency securities':pd.Series([4650,4720,4736,4819],index=pd.to_datetime(['2025-12-01','2026-03-01','2026-04-01','2026-07-01'])),
     })
-    out=summarize_treasury_financing(z,m)
+    out=summarize_treasury_financing(z,m,as_of="2026-09-07")
     assert out['available']
     assert out['as_of_quarter']=='2026Q1'
     assert 47 < out['monetary_capable_absorption_pct'] < 48

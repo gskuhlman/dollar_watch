@@ -20,8 +20,8 @@ def _sample():
 
 
 def test_version_and_schema():
-    assert __version__ == '3.4.8'
-    assert APP_VERSION == '3.4.8'
+    assert __version__ == '3.4.25'
+    assert APP_VERSION == '3.4.25'
     assert SCHEMA_VERSION == '3.4.1'
 
 
@@ -54,4 +54,4 @@ def test_app_displays_deterministic_tic_decomposition():
 
 if __name__ == '__main__':
     test_version_and_schema(); test_tic_sector_reconciliation_is_self_contained(); test_llm_has_tic_sector_integrity_guardrail(); test_app_displays_deterministic_tic_decomposition()
-    print('v3.4.8 tests passed')
+    print('v3.4.16 tests passed')
