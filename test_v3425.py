@@ -28,9 +28,9 @@ def _cftc_payload(state='CROWDED_LONG'):
 
 
 def test_version_only_narrative_no_formula_or_schema_bump():
-    assert __version__ == APP_VERSION == '3.4.25'
+    assert __version__ == APP_VERSION == '3.4.27'
     assert SCHEMA_VERSION == '3.4.1'
-    assert SCORE_MODEL_VERSION == '3.4.3'
+    assert SCORE_MODEL_VERSION == '3.4.4'
 
 
 def test_current_crowded_long_context_follows_cftc_position():

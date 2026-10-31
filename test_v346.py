@@ -5,8 +5,8 @@ from dollar_dashboard.run_history import APP_VERSION
 
 
 def test_v346_version():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
 
 
 def test_mof_yen_buying_does_not_imply_treasury_sales():

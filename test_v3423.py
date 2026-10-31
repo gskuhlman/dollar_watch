@@ -10,10 +10,10 @@ from dollar_dashboard.storage import connect, database_status
 
 
 def test_v3423_lineage():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_default_runtime_paths_are_install_root_anchored(monkeypatch):
@@ -54,7 +54,7 @@ def test_existing_database_is_migrated_in_place_and_backed_up(monkeypatch, tmp_p
     assert count == 1
     assert versions == [1, 2]
     assert {"run_id", "parent_run_id", "app_version", "schema_version", "run_kind"}.issubset(cols)
-    backups = list((data_dir / "backups").glob("dashboard_pre_3.4.25_*.sqlite"))
+    backups = list((data_dir / "backups").glob("dashboard_pre_3.4.27_*.sqlite"))
     assert len(backups) == 1
     check = sqlite3.connect(backups[0])
     assert check.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
@@ -63,7 +63,7 @@ def test_existing_database_is_migrated_in_place_and_backed_up(monkeypatch, tmp_p
     # A second startup has no pending release migration, so it must not create
     # another pre-migration backup.
     con = connect(); con.close()
-    assert len(list((data_dir / "backups").glob("dashboard_pre_3.4.25_*.sqlite"))) == 1
+    assert len(list((data_dir / "backups").glob("dashboard_pre_3.4.27_*.sqlite"))) == 1
 
 
 def test_database_status_reports_persistent_history(monkeypatch, tmp_path):

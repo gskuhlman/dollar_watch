@@ -15,5 +15,7 @@
   "min_position_pct": 2.0,
   "min_trade_dollars": 1000,
   "max_turnover_pct": 25.0,
+  "daily_refresh_enabled": true,
+  "daily_refresh_time": "18:30",
   "version": "3.4.2"
 }

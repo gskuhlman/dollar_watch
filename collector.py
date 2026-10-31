@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
 
 
-def main():
+def run_collection(run_kind: str = "SCHEDULED_COLLECTOR", verbose: bool = True) -> dict:
+    """Collect, score, save one snapshot and its alerts. Shared by the CLI and the in-app daily refresher."""
     prior = recent_snapshots(1)
     prior = prior[0] if prior else None
     comparison_history = None
@@ -67,8 +68,20 @@ def main():
         "alerts": alerts,
         "fixed_horizon_changes": fixed_horizon_changes,
     }
-    rid = save_snapshot(payload, run_kind="SCHEDULED_COLLECTOR")
+    rid = save_snapshot(payload, run_kind=run_kind)
     save_alerts(alerts)
+    if verbose:
+        _print_summary(rid, scores, fixed_horizon_changes, portfolio)
+    if alerts:
+        if verbose:
+            print("Alerts:")
+            for a in alerts: print(f"  [{a['severity']}] {a['message']}")
+        sent, msg = send_webhook(alerts)
+        if sent and verbose: print(msg)
+    return {"bundle": bundle, "snapshot_id": rid, "scores": scores, "alerts": alerts}
+
+
+def _print_summary(rid, scores, fixed_horizon_changes, portfolio):
     print(f"Saved V3.4.11 snapshot #{rid} | phase={scores['phase']} | confidence={scores['confidence']:.0f}/100")
     print(f"Early warning={scores['early_warning_index']:.1f} | confirmation={scores['confirmation_index']:.1f}")
     one_day=((fixed_horizon_changes.get("horizons",{}) or {}).get("1D",{}) or {})
@@ -83,11 +96,10 @@ def main():
         print("Portfolio actions:")
         for _, r in trades.iterrows():
             print(f"  {r['Action']:6} {r['Asset']}: ${abs(r['Trade $']):,.0f} -> {r['Recommended %']:.1f}%")
-    if alerts:
-        print("Alerts:")
-        for a in alerts: print(f"  [{a['severity']}] {a['message']}")
-        sent, msg = send_webhook(alerts)
-        if sent: print(msg)
+
+
+def main():
+    run_collection()
 
 
 if __name__ == "__main__":

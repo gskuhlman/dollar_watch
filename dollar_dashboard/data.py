@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -16,6 +17,7 @@ except ImportError:  # allows offline/unit tests of non-market collectors
     yf = None
 
 UA = {"User-Agent": "dollar_watch/3.4.23 (+local research dashboard)"}
+FRED_WORKERS = 6
 
 MARKET_TICKERS = {
     "DXY": "DX-Y.NYB",
@@ -74,8 +76,8 @@ FRED_SERIES = {
     "10Y-2Y curve": "T10Y2Y",
     "10Y-3M curve": "T10Y3M",
     "Financial Conditions Index": "NFCI",
-    "Reserve balances (billions)": "WRESBAL",
-    "Treasury General Account (billions)": "WTREGEN",
+    "Reserve balances (millions)": "WRESBAL",
+    "Treasury General Account (millions)": "WTREGEN",
     "Central bank liquidity swaps (millions)": "SWPT",
     "FIMA repo - foreign official (millions)": "H41RESPPALGTRFNWW",
     "Foreign Treasury holdings grand total (millions)": "FORTREASPOS99996",
@@ -224,12 +226,16 @@ def fetch_fred_series(series_id: str, start: str | None = None) -> pd.Series:
 
 
 def fetch_fred_bundle(start: str = "2023-01-01") -> tuple[pd.DataFrame, pd.DataFrame]:
-    series: Dict[str, pd.Series] = {}
-    for label, sid in FRED_SERIES.items():
+    def _one(item):
+        label, sid = item
         try:
-            series[label] = fetch_fred_series(sid, start=start)
+            return label, fetch_fred_series(sid, start=start)
         except Exception:
-            series[label] = pd.Series(dtype=float, name=sid)
+            return label, pd.Series(dtype=float, name=sid)
+
+    # ~50 independent CSV downloads; a small pool cuts ~14s to ~3s. map() keeps FRED_SERIES order.
+    with ThreadPoolExecutor(max_workers=FRED_WORKERS, thread_name_prefix="fred") as pool:
+        series: Dict[str, pd.Series] = dict(pool.map(_one, FRED_SERIES.items()))
     if not series:
         return pd.DataFrame(), pd.DataFrame()
     hist = pd.concat(series, axis=1).sort_index()

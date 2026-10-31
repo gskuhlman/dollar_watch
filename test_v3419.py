@@ -22,10 +22,10 @@ def _fred_tic_frame():
 
 
 def test_v3419_version_and_score_model_bump():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_tic_transaction_path_survives_direct_country_table_failure():
@@ -50,7 +50,7 @@ def test_fixed_horizon_marks_material_data_quality_change():
     }
     history=[{
         "timestamp":"2026-09-15T20:00:00Z","_captured_at":"2026-09-15T20:00:00Z",
-        "_schema_version":"3.4.1","_score_model_version":"3.4.3",
+        "_schema_version":"3.4.1","_score_model_version":"3.4.4",
         "component_confidence":{"tic":35.0,"tic_transactions":35.0,"fred":100.0},
         "scores":{"regimes":{"Reserve-confidence crisis":29.0},"confidence":75.0,"confirmation_index":20.0,"early_warning_index":25.0},
     }]

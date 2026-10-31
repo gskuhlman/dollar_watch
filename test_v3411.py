@@ -22,11 +22,11 @@ def _snap(ts, score, *, score_model=None, schema=SCHEMA_VERSION):
 
 
 def test_v3411_version_and_score_model_lineage():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
-    assert lineage()["score_model_version"] == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
+    assert lineage()["score_model_version"] == "3.4.4"
 
 
 def test_old_same_schema_snapshot_maps_to_pre_break_model_and_is_incomparable():
@@ -36,7 +36,7 @@ def test_old_same_schema_snapshot_maps_to_pre_break_model_and_is_incomparable():
     row=ctx["horizons"]["1D"]
     assert row["status"] == "INCOMPARABLE_SCORE_MODEL"
     assert row["reference_score_model"] == "3.4.1"
-    assert row["current_score_model"] == "3.4.3"
+    assert row["current_score_model"] == "3.4.4"
     assert "regime_deltas" not in row
 
 
@@ -49,7 +49,7 @@ def test_different_score_model_blocks_fixed_horizon_delta():
     assert row["status"] == "INCOMPARABLE_SCORE_MODEL"
     assert "regime_deltas" not in row
     assert row["reference_score_model"] == "9.9.9"
-    assert row["current_score_model"] == "3.4.3"
+    assert row["current_score_model"] == "3.4.4"
 
 
 def test_verification_summary_is_authoritative_and_noncontradictory():

@@ -9,10 +9,10 @@ def _scores(v=10.0):
 
 
 def test_v3421_version_lineage_unchanged_score_model():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_unavailable_horizon_has_human_reason():
@@ -37,11 +37,11 @@ def test_score_model_mismatch_has_human_reason():
     h=ctx["horizons"]["7D"]
     assert h["status"] == "INCOMPARABLE_SCORE_MODEL"
     assert "3.4.1" in h["status_reason"]
-    assert "3.4.3" in h["status_reason"]
+    assert "3.4.4" in h["status_reason"]
 
 
 def test_app_renders_na_not_none_for_horizon_cells():
     app=open("app.py",encoding="utf-8").read()
-    assert 'row[label]="N/A" if d is None' in app
+    assert 'row[label]=optional_number_text(d, decimals=1, signed=True)' in app
     assert '"Reason":h.get("status_reason") or "N/A"' in app
     assert "No comparable fixed-horizon reference is available yet" in app

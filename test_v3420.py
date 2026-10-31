@@ -17,10 +17,10 @@ def _calendar_payload():
 
 
 def test_v3420_version_keeps_score_model_343():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_mixed_shared_date_calendar_lint_checks_every_tenor():

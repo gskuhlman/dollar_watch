@@ -10,10 +10,10 @@ from dollar_dashboard.treasury_financing import _parse_fed_z1_html_series
 
 
 def test_v3417_version_and_intentional_score_model_break():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_realistic_fiscaldata_tips_and_frn_flags_override_note_type():

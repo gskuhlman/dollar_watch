@@ -27,6 +27,10 @@ UA=UA_VARIANTS[0]
 # Canonical official evidence surfaces.
 MOF_FX_INDEX="https://www.mof.go.jp/english/policy/international_policy/reference/feio/index.html"
 MOF_FX_MONTHLY_INDEX="https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/index.html"
+# Newest monthly releases scanned per run. Six months covers the scoring catalyst's 90-day decay
+# window; walking the full index (~40 pages back to 2023) cost ~40s and, with per-page retries,
+# could stretch a collection toward an hour when the MOF site was slow.
+MOF_MAX_MONTHLY_PAGES=6
 MOF_FX_20260828="https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/20260828.html"
 MOF_FX_20260828_EN="https://www.mof.go.jp/english/policy/international_policy/reference/feio/monthly/20260828e.html"
 NYFED_FX_QUARTERS="https://www.newyorkfed.org/markets/quar_reports"
@@ -232,6 +236,11 @@ def _parse_yen_intervention_amount(text:str):
     s=_normalize_japanese_numeric(text)
     # Search near the statistic label first, but allow page-wide fallback for the canonical release.
     chunks=[]
+    # No-intervention months read "…における外国為替平衡操作額 0円"; only accept a bare-yen amount
+    # directly after that label so unrelated "0円" text elsewhere on the page cannot match.
+    zero=re.search(r'外国為替平衡操作額\s*0\s*円',s)
+    if zero:
+        return 0
     lab=re.search(r'(?:外国為替平衡操作額|外国為替平衡操作の実施状況|foreign exchange intervention)',s,re.I)
     if lab: chunks.append(s[lab.start():lab.start()+500])
     chunks.append(s)
@@ -253,7 +262,12 @@ def _decode_response_text(r) -> str:
     raw=getattr(r,'content',b'') or b''
     enc=getattr(r,'encoding',None)
     apparent=getattr(r,'apparent_encoding',None)
-    for candidate in (enc, apparent, 'utf-8', 'cp932', 'shift_jis'):
+    # V3.4.27: strict UTF-8 first. MOF sends no charset header, so requests reports its
+    # ISO-8859-1 default; Latin-1 never fails to decode, which silently produced mojibake and
+    # made every live MOF parse fail. Latin-1 is therefore only a last resort.
+    latin1={'iso-8859-1','latin-1','latin1'}
+    declared=None if str(enc or '').lower() in latin1 else enc
+    for candidate in ('utf-8-sig', declared, apparent, 'cp932', 'shift_jis', enc):
         if not candidate: continue
         try:
             text=raw.decode(candidate,errors='strict')
@@ -271,7 +285,11 @@ def _parse_english_yen_intervention_amount(text:str):
     m=re.search(r'(?:total amount[^¥$]{0,120})?[¥\u00a5]\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*billion',s,re.I)
     if not m:
         m=re.search(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*billion\s*yen',s,re.I)
-    if not m: return None
+    if not m:
+        # No-intervention months are published as "¥ 0" right after the total-amount label.
+        if re.search(r'total amount of foreign exchange intervention operations[^¥]{0,160}¥\s*0(?![0-9.,])',s,re.I):
+            return 0
+        return None
     return int(round(float(m.group(1).replace(',',''))*1_000_000_000))
 
 def fetch_japan_mof_intervention(timeout:int=12)->dict:
@@ -281,6 +299,66 @@ def fetch_japan_mof_intervention(timeout:int=12)->dict:
     until quarterly detailed operations data identifies currencies bought/sold.
     """
     out={"ok":False,"source_url":MOF_FX_20260828_EN,"source_tier":"PRIMARY","amount_yen":None,"amount_trillion_yen":None,"direction":"UNKNOWN"}
+
+    # 0) Discover the Japanese monthly index first. V3.4.27: the dated English canonical page stays
+    # reachable forever, so trying it first pinned the dashboard to the 2026-07-30..08-26 period and
+    # hid every later monthly release. Newer index releases now take precedence.
+    candidates=[]; index_error=None
+    try:
+        r=_get(MOF_FX_MONTHLY_INDEX,timeout); html=_decode_response_text(r); p=_Links(); p.feed(html)
+        for href,anchor in p.links:
+            full=urljoin(r.url,href).split('#',1)[0]
+            if re.search(r'/reference/feio/data/monthly/20\d{6}\.html?$',full): candidates.append((full,anchor))
+    except Exception as exc:
+        index_error=str(exc)
+    if not any(u==MOF_FX_20260828 for u,_ in candidates): candidates.append((MOF_FX_20260828,'2026-08-28 canonical fallback'))
+    candidates=sorted(set(candidates),key=lambda x:x[0],reverse=True)
+
+    def _read_release(full,anchor):
+        r=_get(full,timeout); text=_plain(_decode_response_text(r))
+        amount=_parse_yen_intervention_amount(text); start,end=_parse_jp_period(text+' '+anchor)
+        if amount is None:
+            return None
+        # Canonical period defaults apply only to the canonical 2026-08-28 release; another
+        # release with an unparseable period must not inherit the July/August dates.
+        if full==MOF_FX_20260828:
+            start=start or '2026-07-30'; end=end or '2026-08-26'
+        _cache_put(full,text,r.url,r.headers.get('content-type','text/html'))
+        return {"url":full,"final_url":r.url,"anchor":anchor,"start":start,"end":end,"amount":amount}
+
+    def _try_japanese(rows, fetch_mode):
+        """Newest-first, bounded scan. Reports the most recent nonzero intervention within the
+        scanned window (scoring ages it from its own period end) plus the latest release, which
+        may be a ¥0 month. If every scanned release is ¥0, the latest ¥0 release is reported."""
+        latest=chosen=None
+        for full,anchor in rows[:MOF_MAX_MONTHLY_PAGES]:
+            try:
+                rel=_read_release(full,anchor)
+            except Exception:
+                continue
+            if rel is None:
+                continue
+            latest=latest or rel
+            if rel["amount"]>0:
+                chosen=rel; break
+        chosen=chosen or latest
+        if chosen is None:
+            return False
+        amount=chosen["amount"]; start,end=chosen["start"],chosen["end"]
+        out.update({"ok":True,"source_url":chosen["final_url"],"canonical_url":chosen["url"],"index_url":MOF_FX_MONTHLY_INDEX,"release_anchor":chosen["anchor"],
+                    "period_start":start,"period_end":end,"period_status":"PARSED" if start and end else "UNKNOWN","amount_yen":amount,
+                    "amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
+                    "latest_release_url":latest["url"],"latest_release_period_start":latest["start"],"latest_release_period_end":latest["end"],
+                    "latest_release_amount_yen":latest["amount"],
+                    "direction":"UNKNOWN","direction_confidence":0.0,"fetched_at":datetime.now(timezone.utc).isoformat(),
+                    "fetch_mode":fetch_mode,"live_reachable":True,
+                    "interpretation_guard":"Monthly MOF total proves occurrence/amount only; direction is unknown until quarterly detailed operations are published. "
+                                           "period_* describe the most recent intervention in the scanned window; latest_release_* is the newest monthly release, which may be ¥0."})
+        return True
+
+    newer=[c for c in candidates if c[0]>MOF_FX_20260828]
+    if newer and _try_japanese(candidates,"LIVE_JAPANESE_NEWER_RELEASE"):
+        return out
 
     # 1) English canonical release: simpler, stable numeric notation. Validate before caching.
     try:
@@ -299,31 +377,8 @@ def fetch_japan_mof_intervention(timeout:int=12)->dict:
         out['english_error']=str(exc)
 
     # 2) Japanese canonical/index flow. Decode defensively and only promote cache after successful parse.
-    candidates=[]; index_error=None
-    try:
-        r=_get(MOF_FX_MONTHLY_INDEX,timeout); html=_decode_response_text(r); p=_Links(); p.feed(html)
-        for href,anchor in p.links:
-            full=urljoin(r.url,href).split('#',1)[0]
-            if re.search(r'/reference/feio/data/monthly/20\d{6}\.html?$',full): candidates.append((full,anchor))
-    except Exception as exc:
-        index_error=str(exc)
-    if not any(u==MOF_FX_20260828 for u,_ in candidates): candidates.append((MOF_FX_20260828,'2026-08-28 canonical fallback'))
-    candidates=sorted(set(candidates),key=lambda x:x[0],reverse=True)
-    for full,anchor in candidates:
-        try:
-            r=_get(full,timeout); html=_decode_response_text(r); text=_plain(html)
-            amount=_parse_yen_intervention_amount(text); start,end=_parse_jp_period(text+' '+anchor)
-            if amount is None: continue
-            _cache_put(full,text,r.url,r.headers.get('content-type','text/html'))
-            out.update({"ok":True,"source_url":r.url,"canonical_url":full,"index_url":MOF_FX_MONTHLY_INDEX,"release_anchor":anchor,
-                        "period_start":start or '2026-07-30',"period_end":end or '2026-08-26',"amount_yen":amount,
-                        "amount_trillion_yen":round(amount/1_000_000_000_000,4),"intervention_occurred":bool(amount>0),
-                        "direction":"UNKNOWN","direction_confidence":0.0,"fetched_at":datetime.now(timezone.utc).isoformat(),
-                        "fetch_mode":"LIVE_JAPANESE_FALLBACK","live_reachable":True,
-                        "interpretation_guard":"Monthly MOF total proves occurrence/amount only; direction is unknown until quarterly detailed operations are published."})
-            return out
-        except Exception:
-            continue
+    if _try_japanese([c for c in candidates if c[0]<=MOF_FX_20260828],"LIVE_JAPANESE_FALLBACK"):
+        return out
 
     # 3) Validated packaged/cache fallbacks, English first. Never return a poisoned live cache if it fails parsing.
     for url,parser in ((MOF_FX_20260828_EN,_parse_english_yen_intervention_amount),(MOF_FX_20260828,_parse_yen_intervention_amount)):

@@ -7,10 +7,10 @@ from test_v331 import _base, _official, _ovs
 
 
 def test_v3414_version_lineage_unchanged_score_model():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_us_q2_direct_fx_fact_is_not_duplicated_in_deterministic_evidence():

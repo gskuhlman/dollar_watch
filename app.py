@@ -24,6 +24,9 @@ from dollar_dashboard.evidence import classify_source, check_source_url, fetch_s
 from dollar_dashboard.verification import primary_source_candidates, discover_primary_evidence, systematic_policy_leads, verification_rows_from_news
 from dollar_dashboard.official_policy import canonical_verification_leads
 from dollar_dashboard.run_history import classify_snapshot_change, build_fixed_horizon_context, fixed_horizon_reference, SCORE_MODEL_VERSION
+from dollar_dashboard.table_format import optional_number_text
+from dollar_dashboard.daily_refresh import get_or_start
+from dollar_dashboard import charts
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_SETTINGS = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -35,7 +38,7 @@ def render_generated_markdown(text: str) -> None:
     st.markdown(safe)
 
 
-st.set_page_config(page_title="dollar_watch V3.4.25", page_icon="💵", layout="wide")
+st.set_page_config(page_title="dollar_watch V3.4.27", page_icon="💵", layout="wide")
 
 
 def severity(v: float) -> str:
@@ -102,24 +105,53 @@ def deterministic_analysis(scores, portfolio_df, news_class, fixed_horizon_chang
     return "\n\n".join(lines)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_live_data():
-    return collect_live_bundle()
+def _daily_refresh_config():
+    return {"enabled": get_setting("daily_refresh_enabled", DEFAULT_SETTINGS.get("daily_refresh_enabled", True)),
+            "time": get_setting("daily_refresh_time", DEFAULT_SETTINGS.get("daily_refresh_time", "18:30"))}
 
 
-st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.25")
+def _newest_snapshot_time():
+    rows = recent_snapshots(1)
+    return rows[0].get("_captured_at") if rows else None
+
+
+def _run_daily_collection():
+    from collector import run_collection
+    return run_collection(run_kind="SCHEDULED_IN_APP", verbose=False)
+
+
+# V3.4.27: one background thread per server process collects and saves a snapshot every day,
+# whether or not a browser tab is open, and catches up on startup when history is stale.
+refresher = get_or_start(run_fn=_run_daily_collection, config_fn=_daily_refresh_config, newest_snapshot_fn=_newest_snapshot_time)
+
+
+@st.cache_data(ttl=900, show_spinner=False, max_entries=4)
+def load_live_data(generation: int = 0, use_scheduled: bool = True):
+    # A completed daily run supplies its bundle directly, so open pages do not re-collect it.
+    fresh = refresher.bundle_for(generation) if use_scheduled else None
+    return fresh if fresh is not None else collect_live_bundle()
+
+
+def _fmt_et(iso):
+    ts = pd.to_datetime(iso, errors="coerce", utc=True)
+    return "—" if pd.isna(ts) else ts.tz_convert("America/New_York").strftime("%a %b %d, %I:%M %p ET")
+
+
+st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.27")
 st.caption("Evidence provenance + confidence-weighted leading indicators + six causal regimes + machine reversal triggers + bounded portfolio actions.")
+data_stamp = st.empty()
 
 # Primary navigation belongs directly under the title. All analytical results render inside
 # the selected tab so the menu never sits below the headline dashboard output.
-(exec_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
-    "Executive","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.25 Roadmap"
+(exec_tab,charts_tab,market_tab,financing_tab,flows_tab,policy_tab,portfolio_tab,analysis_tab,hist_tab,health_tab,roadmap_tab)=st.tabs([
+    "Executive","Charts","Markets / Repo / Fiscal","Treasury Financing","Positioning & Foreign Flows","Policy / Evidence","Portfolio","Analysis / Triggers","Alerts & History","Data Health","V3.4.27 Roadmap"
 ])
 
 with st.sidebar:
     st.header("Controls")
     if st.button("Refresh all live data", type="primary", width="stretch"):
         st.cache_data.clear()
+        st.session_state["live_refresh_generation"]=refresher.generation  # live fetch wins until the next daily run
     portfolio_value=st.number_input("Portfolio value ($)",1000.0,100_000_000.0,float(get_setting("portfolio_value",DEFAULT_SETTINGS["portfolio_value"])),step=5000.0)
     min_trade=st.slider("Minimum trade threshold (%)",0.5,10.0,float(DEFAULT_SETTINGS.get("allocation_change_threshold_pct",3.0)),0.5)
     min_position=st.slider("Minimum new position (%)",1.0,10.0,float(DEFAULT_SETTINGS.get("min_position_pct",2.0)),0.5)
@@ -135,9 +167,49 @@ with st.sidebar:
     if st.button("Save settings",width="stretch"):
         set_setting("portfolio_value",portfolio_value); set_setting("lm_url",lm_url); set_setting("lm_model",lm_model); set_setting("lm_timeout",int(lm_timeout)); set_setting("auto_verify",bool(auto_verify)); set_setting("auto_verify_limit",int(auto_verify_limit))
         st.success("Settings saved")
+    st.divider()
+    st.subheader("Automatic daily update")
+    _cfg=refresher.config()
+    st.toggle("Update data daily while the app is running",value=_cfg["enabled"],key="daily_refresh_enabled",
+              on_change=lambda: set_setting("daily_refresh_enabled",bool(st.session_state["daily_refresh_enabled"])))
+    st.text_input("Daily update time (24h, New York time)",value=_cfg["time"],key="daily_refresh_time",
+                  on_change=lambda: set_setting("daily_refresh_time",str(st.session_state["daily_refresh_time"]).strip()),
+                  help="HH:MM in America/New_York. Default 18:30, after the U.S. close and the day's FRED/Treasury/NY Fed releases.")
+    if st.button("Run update now",width="stretch"):
+        if refresher.trigger_async("manual (sidebar)"): st.toast("Update started; the page refreshes when it finishes.")
+        else: st.toast("An update is already running.")
 
+if refresher.status()["running"]:
+    with st.spinner("Daily update in progress (a full collection can take up to an hour); waiting for it instead of collecting twice..."):
+        refresher.wait_idle(timeout=7200)
+data_generation=refresher.generation
+st.session_state["data_generation"]=data_generation
 with st.spinner("Collecting markets, FRED/repo, Treasury financing/Z.1, auctions/fiscal flows, CFTC, TIC, COFER, stablecoins and news..."):
-    bundle=load_live_data()
+    bundle=load_live_data(data_generation, st.session_state.get("live_refresh_generation")!=data_generation)
+
+
+@st.fragment(run_every="2m")
+def daily_refresh_status():
+    s=refresher.status()
+    if s["generation"]>st.session_state.get("data_generation",0) and not s["running"]:
+        st.rerun(scope="app")  # a newer daily snapshot exists; reload the whole page onto it
+    if s["running"]:
+        st.caption(f"Updating now (started {_fmt_et(s['last_started'])}).")
+    if s["enabled"]:
+        st.caption(f"Next automatic update: {_fmt_et(s['next_run'])}")
+    else:
+        st.caption("Automatic daily update is off.")
+    if s["last_finished"]:
+        outcome="succeeded" if s["last_ok"] else f"failed — {s['last_error']}"
+        st.caption(f"Last automatic run {_fmt_et(s['last_finished'])}: {outcome}.")
+    if not s["thread_alive"]:
+        st.warning("Background update thread is not running; restart the app.")
+
+
+with st.sidebar:
+    daily_refresh_status()
+data_stamp.caption(f"Data collected {_fmt_et(bundle['snapshot'].get('timestamp'))} · "
+                   + ("updates automatically every day at " + refresher.config()["time"] + " ET while the app is running" if refresher.config()["enabled"] else "automatic daily update off"))
 
 snapshot=bundle["snapshot"]
 news_df=bundle.get("news",pd.DataFrame())
@@ -250,7 +322,7 @@ with exec_tab:
         for label in horizon_labels:
             h=((fixed_horizon_changes.get("horizons",{}) or {}).get(label,{}) or {})
             d=(h.get("regime_deltas",{}) or {}).get(regime) if h.get("status")=="OK" else None
-            row[label]="N/A" if d is None else round(float(d),1)
+            row[label]=optional_number_text(d, decimals=1, signed=True)
         fh_rows.append(row)
     st.subheader("Fixed-horizon regime changes")
     st.caption("Changes are risk-index points versus saved history. Different-score-model references are retrospectively re-scored only if complete historical inputs exist; replayed comparisons are flagged as estimates. Missing history remains N/A.")
@@ -288,8 +360,8 @@ with exec_tab:
             "Material source changes":source_changes,
             "Target":_ui_na(str(h.get("target_timestamp",''))[:19]),
             "Reference":_ui_na(str(h.get("reference_timestamp",''))[:19] if h.get("reference_timestamp") else None),
-            "Actual age (days)":_ui_na(h.get("actual_age_days")),
-            "Target error (hours)":_ui_na(h.get("target_error_hours")),
+            "Actual age (days)":optional_number_text(h.get("actual_age_days"), decimals=2),
+            "Target error (hours)":optional_number_text(h.get("target_error_hours"), decimals=2),
             "Method":_ui_na(h.get("comparison_method")),
             "Replay caveat":_ui_na(h.get("replay_limitations")),
             "Original score model":_ui_na(h.get("reference_original_score_model",h.get("reference_score_model"))),
@@ -340,9 +412,45 @@ with exec_tab:
         for a in current_alerts[:10]: st.warning(f"[{a['severity']}] {a['message']}")
     else: st.success("No current fixed-horizon or machine-trigger alert threshold is crossed.")
 
-    if st.button("Save complete V3.4.25 snapshot + alerts",width="stretch"):
+    if st.button("Save complete V3.4.27 snapshot + alerts",width="stretch"):
         payload={**snapshot,"scores":scores,"news_scores":news_class.get("scores",{}),"overrides":overrides,"machine_triggers":machine_triggers,"portfolio":portfolio_df.to_dict(orient="records"),"portfolio_meta":portfolio_meta,"alerts":current_alerts}
-        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.25 manual snapshot #{rid}")
+        rid=save_snapshot(payload,run_kind="MANUAL"); save_alerts(current_alerts); st.success(f"Saved V3.4.27 manual snapshot #{rid}")
+
+with charts_tab:
+    window=st.segmented_control("Time window",list(charts.WINDOWS),default="1Y",key="chart_window") or "1Y"
+    try: dark=st.context.theme.type=="dark"
+    except Exception: dark=False
+
+    def _chart(df,panel_title,unit,fmt,key,**kw):
+        if df.empty:
+            st.info(f"{panel_title}: no data in this window.")
+            return
+        st.plotly_chart(charts.line_figure(df,title=panel_title,unit=unit,fmt=fmt,dark=dark,**kw),width="stretch",key=f"chart_{key}")
+        with st.expander("Data table"):
+            st.dataframe(charts.wide_table(df),width="stretch",hide_index=True)
+
+    regime_names=list(scores["regimes"])
+    risk_df=charts.risk_history_frame(list(reversed(history)),regime_names)
+    risk_start=charts.window_start(pd.DatetimeIndex(risk_df["date"]),window) if not risk_df.empty else None
+    if risk_start is not None: risk_df=risk_df[risk_df["date"]>=risk_start]
+    _chart(risk_df,"Risk indices over time (saved snapshots)","index 0–100",".0f","risk",y_range=[0,100],order=regime_names,
+           max_gap=pd.Timedelta(days=4))
+    st.caption("Each point is the score as published when the snapshot was saved; points before score model "
+               f"{SCORE_MODEL_VERSION} used the earlier model. Lines break where no snapshot was saved for more than 4 days.")
+
+    fred_hist=bundle.get("fred_hist",pd.DataFrame())
+    mp=charts.MARKET_PANEL
+    specs=[(charts.fred_panel_frame(fred_hist,p,window),p["title"],p["unit"],p["fmt"],p["key"],
+            {"zero_line":p.get("zero_line",False),"thresholds":p.get("thresholds"),"order":[name for name,_ in p["columns"].values()]})
+           for p in charts.FRED_PANELS]
+    specs.insert(1,(charts.market_panel_frame(bundle.get("market_hist",pd.DataFrame()),window),mp["title"],mp["unit"],mp["fmt"],mp["key"],
+                    {"order":list(mp["columns"].values())}))
+    for i in range(0,len(specs),2):
+        for col,(df,title,unit,fmt,key,kw) in zip(st.columns(2),specs[i:i+2]):
+            with col:
+                _chart(df,title,unit,fmt,key,**kw)
+    st.caption("Dashed lines mark the model's own trigger thresholds. FRED weekly series (reserves, TGA, Fed balance sheet, custody) "
+               "plot on their release dates; daily series plot every business day.")
 
 with market_tab:
     st.subheader("Market prices")
@@ -362,7 +470,7 @@ with market_tab:
     fred=bundle.get("fred_summary",pd.DataFrame())
     if fred.empty: st.warning("FRED feed unavailable.")
     else:
-        plumbing_rows=[x for x in ["SOFR","IORB","SOFR-IORB spread","SOFR99-IORB spread","Tri-Party General Collateral Rate","TGCR-IORB spread","TGCR dispersion","Reserve balances (billions)","Treasury General Account (billions)","Central bank liquidity swaps (millions)","FIMA repo - foreign official (millions)"] if x in fred.index]
+        plumbing_rows=[x for x in ["SOFR","IORB","SOFR-IORB spread","SOFR99-IORB spread","Tri-Party General Collateral Rate","TGCR-IORB spread","TGCR dispersion","Reserve balances (millions)","Treasury General Account (millions)","Central bank liquidity swaps (millions)","FIMA repo - foreign official (millions)"] if x in fred.index]
         if plumbing_rows:
             st.write("**Repo / liquidity internals**")
             st.dataframe(fred.loc[plumbing_rows].round(3),width="stretch")

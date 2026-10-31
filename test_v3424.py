@@ -28,8 +28,8 @@ def snapshot(ts="2026-09-11T19:30:00Z"):
 
 
 def test_v3424_lineage_and_no_score_model_bump():
-    assert __version__ == APP_VERSION == "3.4.25"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert __version__ == APP_VERSION == "3.4.27"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_prior_model_is_replayed_using_its_own_inputs_and_clock():
@@ -43,7 +43,7 @@ def test_prior_model_is_replayed_using_its_own_inputs_and_clock():
     assert h["status"] == "OK"
     assert h["comparison_method"] == "REPLAY_CURRENT_MODEL_SAVED_INPUTS"
     assert h["reference_original_score_model"] == "3.4.1"
-    assert h["reference_score_model"] == "3.4.3"
+    assert h["reference_score_model"] == "3.4.4"
     assert all(delta == 0.0 for delta in h["regime_deltas"].values())
     assert h["data_quality_status"] == "DATA_QUALITY_AFFECTED"
     assert all(val == 0 for val in reference["scores"]["regimes"].values())  # no mutation

@@ -239,8 +239,10 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict],
     sofr99_z = _safe(_v(f, "SOFR99-IORB spread", "zscore_1y"), None)
     sofr99_recent10 = _safe(_v(f, "SOFR99-IORB spread", "recent_obs_ge_10bp"), 0)
     tgcr_disp = _safe(_v(f, "TGCR dispersion", "last"), None)
-    reserves_3m = _safe(_v(f, "Reserve balances (billions)", "3m_change"))
-    tga_3m = _safe(_v(f, "Treasury General Account (billions)", "3m_change"))
+    # FRED WRESBAL/WTREGEN are published in millions. Pre-3.4.27 snapshots stored the same
+    # millions values under a mislabeled "(billions)" key, so replays fall back to it.
+    reserves_3m = _safe(_v(f, "Reserve balances (millions)", "3m_change", default=_v(f, "Reserve balances (billions)", "3m_change")))
+    tga_3m = _safe(_v(f, "Treasury General Account (millions)", "3m_change", default=_v(f, "Treasury General Account (billions)", "3m_change")))
     foreign_custody_yoy = _safe(_v(f, "Foreign custody UST YoY change (millions)", "last"))
     foreign_official_3m = _safe(_v(f, "Foreign official Treasury holdings (millions)", "3m_change"))
 
@@ -477,7 +479,8 @@ def score(snapshot: dict, news_classification: dict, overrides: dict[str, dict],
     if repo_tail_confirm: plumbing += 8 * fred_conf
     elif repo_tail_watch: plumbing += 3 * fred_conf
     if tgcr_disp is not None and tgcr_disp > 0.10: plumbing += 6 * fred_conf
-    if reserves_3m < -300 and tga_3m > 300: plumbing += 6 * fred_conf
+    # Thresholds are $300B expressed in millions (V3.4.27; previously compared millions to 300 = $300M).
+    if reserves_3m < -300_000 and tga_3m > 300_000: plumbing += 6 * fred_conf
     plumbing += 0.15 * auction_auto
     plumbing += 0.12 * ov.get("geopolitical_cyber_stress", 0)
     plumbing += funding_news

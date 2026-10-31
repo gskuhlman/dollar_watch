@@ -20,8 +20,8 @@ def _sample():
 
 
 def test_version_and_schema():
-    assert __version__ == '3.4.25'
-    assert APP_VERSION == '3.4.25'
+    assert __version__ == '3.4.27'
+    assert APP_VERSION == '3.4.27'
     assert SCHEMA_VERSION == '3.4.1'
 
 

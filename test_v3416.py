@@ -32,10 +32,10 @@ def _jpy_history():
 
 
 def test_v3416_version_lineage_unchanged_scoring():
-    assert __version__ == '3.4.25'
-    assert APP_VERSION == '3.4.25'
+    assert __version__ == '3.4.27'
+    assert APP_VERSION == '3.4.27'
     assert SCHEMA_VERSION == '3.4.1'
-    assert SCORE_MODEL_VERSION == '3.4.3'
+    assert SCORE_MODEL_VERSION == '3.4.4'
 
 
 def test_negative_net_high_percentile_is_not_crowded_short():

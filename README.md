@@ -1,4 +1,8 @@
-# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.25
+# dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.27
+
+**v3.4.27:** Fixes a score-affecting unit bug (FRED reserve balances and TGA are published in millions; the reserve-drain/TGA-rebuild plumbing check compared them to 300 as if billions, firing on $300M moves) and makes Japan MOF intervention discovery prefer newer monthly releases over the dated 2026-08-28 page. `SCORE_MODEL_VERSION` advances to **3.4.4**; schema remains 3.4.1. Adds a **Charts** tab (yields, real yields, curve/term premium, repo spreads, reserves/TGA/RRP, Fed balance sheet, foreign custody, dollar/gold/oil, risk-index history), and an **automatic daily update** while the app is running (default 18:30 ET; toggle, time, and "Run update now" in the sidebar). See `CHANGELOG_V3_4_27.md`.
+
+**v3.4.26:** Arrow-safe fixed-horizon display fields, preventing mixed numeric/`N/A` columns from triggering PyArrow serialization warnings. The persistent runtime database remains untouched. See `CHANGELOG_V3_4_26.md`.
 
 ## V3.4.23 — persistent runtime database + release migrations
 

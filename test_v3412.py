@@ -15,10 +15,10 @@ from dollar_dashboard.storage import (
 
 
 def test_v3412_version_lineage_unchanged_score_model():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_legacy_verdict_variants_canonicalize_without_becoming_new_evidence_categories():

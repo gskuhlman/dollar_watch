@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 import uuid
 import pandas as pd
 
-APP_VERSION='3.4.25'
+APP_VERSION='3.4.27'
 SCHEMA_VERSION='3.4.1'
 # Changes only when regime/component scoring math changes materially. App/layout/LLM
 # releases may advance while this remains stable.
-SCORE_MODEL_VERSION='3.4.3'
+SCORE_MODEL_VERSION='3.4.4'
 
 # Fixed analytical comparison horizons. These are deliberately independent of
 # how often Streamlit/collector happens to run.

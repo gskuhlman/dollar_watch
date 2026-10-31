@@ -1,3 +1,51 @@
+## V3.4.27 — Bug fixes from Oct-2026 coverage review
+
+- [x] Fix reserve/TGA unit bug (millions vs billions) in plumbing stress; score model → 3.4.4.
+- [x] Japan MOF intervention: prefer newer monthly releases over the dated 2026-08-28 page; no inherited period defaults.
+
+## Next — Coverage gaps vs. the live regime (Oct-2026 review)
+
+Context (2026-10-29): Fed hiked in Sept to 3.75–4.00% and held 10–2 on Oct 28 (Cook, Hammack dissented for a hike); Dec hike ~90% priced. 10Y ~5.0% (5.36% intraday high, highest since 2002), 10Y real ~2.6%. Brent $110–116 on the Iran/Hormuz war. DXY ~102. Gold −26% from January peak despite record central-bank buying. The model scored this as QUIET / NORMAL (EW 25) because its regimes are built around a weak-dollar / debasement thesis.
+
+### P0 — Operations
+- [x] Daily automatic update while the app is running (in-app background thread, 18:30 ET default, startup catch-up).
+- [ ] Optional: also schedule `collector.py` in Windows Task Scheduler for days the app isn't open. If both run, expect two snapshots that day.
+- [x] **Collection takes about an hour** (observed 2026-10-31: 07:34→08:37 and 08:55→09:58 ET). Done in V3.4.27: MOF charset bug + unbounded page walk fixed, stages/FRED/Z.1 parallelized; measured 104 s → 16 s. Per-stage seconds in `snapshot['collection_timing']`.
+- [ ] Show `collection_timing` in the Data Health tab, and alert when a run exceeds ~2 minutes.
+- [ ] Add a Data Health "snapshot staleness" alert (newest snapshot > 3 days old).
+- [ ] Update the buyback fallback (`buybacks.py:537`, sb0607, $4B) after the Nov 4 refunding sets new long-end sizes.
+
+### P0 — Missing regime / signals
+- [ ] **Fed-tightening / real-yield-shock regime** (7th regime): Fed target change (FRED `DFEDTARU`, `DFEDTARL`, `EFFR`), 2Y 3m momentum, 10Y real yield level/percentile, long-end selloff, DXY strength. A dollar-supportive, bond-bearish state currently reads as "quiet".
+- [ ] **Energy-shock signal**: add Brent (`BZ=F`); score oil 3m change and oil→breakeven pass-through; `CL=F` is fetched but never scored or used in triggers. Track SPR/IEA releases.
+- [ ] **Nominal long-end level trigger**: 10Y/30Y at multi-year percentile (e.g., 10Y > 5% for ≥3 sessions); today this only enters via term premium.
+
+### P1 — Signals
+- [ ] Gold divergence trigger: price down while central-bank buying is at records (WGC monthly CB data + GLD flows). `gold_real_yield_anomaly` only fires on rallies.
+- [ ] Japan: JGB 10Y/30Y, BOJ policy rate, BOJ decision-day flag (BOJ hiked to 1.25% in Sept; next decision 2026-10-30).
+- [ ] CFTC TFF leveraged-fund positioning in 2Y/10Y/Ultra Treasury futures (basis-trade unwind risk); CFTC currently covers EUR/JPY/CHF only.
+- [ ] Credit / AI risk: IG OAS (`BAMLC0A0CM`), private-credit proxy (BIZD), tech proxy (QQQ/SMH).
+- [ ] Event-calendar panel on the Executive tab: FOMC (12/9), refunding (11/2 estimates, 11/4 statement), CPI, TIC, BOJ, elections (midterms 11/3).
+
+### P1 — News queries (`news.py`)
+- [ ] Add queries: Iran / Hormuz / oil supply; Fed rate hike / dissent / Warsh task forces / QT; quarterly refunding / TBAC / buyback sizes; SLR / basis-trade unwind / dealer balance sheet; BOJ / JGB / yen intervention; private credit / AI capex debt.
+- [ ] Update the "Fed" query, which still assumes rate cuts.
+
+### P1 — Actors (`config/actors.json`)
+- [ ] Add investment banks / primary dealers (JPM, GS, MS, etc.): FX/rates forecast changes, dealer balance-sheet capacity, SLR, repo intermediation.
+- [ ] Add FOMC dissenters (Lisa Cook, Beth Hammack); Japan Finance Minister and BOJ Governor Ueda; Treasury Deputy Assistant Secretary for Federal Finance (Brian Smith, refunding); Iran / OPEC+ / Saudi as energy actors.
+- [ ] Extend Warsh watch terms: task forces, private credit, QT / balance-sheet shrink.
+
+### P2 — Pages
+- [x] Charts tab (yields, real yields, curve/term premium, repo spreads, liquidity, Fed balance sheet, foreign custody, dollar/gold/oil, risk history).
+- [ ] Add Fed target range / EFFR and Brent to the Charts tab once those series are collected.
+- [ ] "Rates & Fed Path" view: target range, implied path, dissents, real yields, curve.
+- [ ] "Energy / Geopolitics" panel.
+- [ ] Fold the Roadmap tab into Data Health.
+
+### Dev hygiene
+- [x] Make `pytest` run cleanly from the repo root (`pytest.ini`: skip `old/`, disable global `langsmith` plugin; global pydantic upgraded 2.7.1 → 2.12.5).
+
 ## V3.4.5 — Semantic/calendar hardening
 
 - [x] Split CFTC latest/next position-as-of dates from their expected Friday publication dates.

@@ -6,20 +6,20 @@ from dollar_dashboard.scoring import score
 
 
 def test_v3410_version():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
 
 
 def test_navigation_is_immediately_below_title_before_results():
     src = Path("app.py").read_text(encoding="utf-8")
-    title = src.index('st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.25")')
+    title = src.index('st.title("dollar_watch — Dollar Crisis Early Warning Dashboard V3.4.27")')
     tabs = src.index('=st.tabs([')
     spinner = src.index('with st.spinner(')
     executive = src.index('with exec_tab:')
     status = src.index('# Status: six regime indices. Delta is fixed 1D')
     assert title < tabs < spinner < executive < status
     assert src.count('=st.tabs([') == 1
-    assert '"V3.4.25 Roadmap"' in src
+    assert '"V3.4.27 Roadmap"' in src
 
 
 def test_human_intent_gate_has_explicit_status():

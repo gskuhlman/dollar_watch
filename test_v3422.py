@@ -20,10 +20,10 @@ def _payload():
 
 
 def test_v3422_version_lineage_unchanged_score_model():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_cftc_tuesday_cannot_be_called_report_date():

@@ -14,6 +14,7 @@ error in which a Treasury held by a levered investor is counted once as a
 Treasury purchase and again as repo financing.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
 from html import unescape
@@ -739,25 +740,50 @@ def summarize_treasury_financing(
     }
 
 
+def _prefetch(fetcher: Callable, jobs: list[tuple[str, str, str, str]], workers: int = 6) -> dict:
+    """Run ``fetcher(sid, start=...)`` for every job concurrently; map (group, label) -> (ok, series|exception)."""
+    def one(job):
+        group, label, sid, job_start = job
+        try:
+            return (group, label), (True, fetcher(sid, start=job_start))
+        except Exception as exc:
+            return (group, label), (False, exc)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="z1") as pool:
+        return dict(pool.map(one, jobs))
+
+
 def fetch_treasury_financing(
     start: str = "2006-01-01", fetcher: Callable = fetch_fred_series
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     errors = {}
+    optional_active = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).normalize() >= OPTIONAL_Z1_ACTIVATION_DATE
+    # ~40 independent FRED downloads fetched concurrently up front (V3.4.27; was sequential).
+    jobs = [("holder", label, sid, start) for label, sid in Z1_FINANCING_SERIES.items()]
+    jobs += [("optional", label, sid, start) for label, sid in OPTIONAL_Z1_FINANCING_SERIES.items()] if optional_active else []
+    jobs += [("money", label, sid, "2018-01-01") for label, sid in MONEY_CONFIRMATION_SERIES.items()]
+    jobs += [("funding", label, sid, "2012-01-01") for label, sid in FUNDING_LAYER_SERIES.items()]
+    fetched = _prefetch(fetcher, jobs)
+
+    def _get(group, label):
+        ok, value = fetched[(group, label)]
+        if not ok:
+            raise value
+        return value
 
     z1 = {}
     for label, sid in Z1_FINANCING_SERIES.items():
         try:
-            z1[label] = fetcher(sid, start=start)
+            z1[label] = _get("holder", label)
         except Exception as exc:
             z1[label] = pd.Series(dtype=float, name=sid)
             errors[f"holder:{label}"] = str(exc)
     optional_holder_errors = {}
     optional_holder_sources = {}
-    if pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None).normalize() >= OPTIONAL_Z1_ACTIVATION_DATE:
+    if optional_active:
         for label, sid in OPTIONAL_Z1_FINANCING_SERIES.items():
             fred_error = None
             try:
-                candidate = fetcher(sid, start=start)
+                candidate = _get("optional", label)
                 if candidate is not None and not candidate.dropna().empty:
                     z1[label] = candidate
                     optional_holder_sources[label] = {"source": "FRED", "series": sid}
@@ -788,7 +814,7 @@ def fetch_treasury_financing(
     money = {}
     for label, sid in MONEY_CONFIRMATION_SERIES.items():
         try:
-            money[label] = fetcher(sid, start="2018-01-01")
+            money[label] = _get("money", label)
         except Exception as exc:
             money[label] = pd.Series(dtype=float, name=sid)
             errors[f"money:{label}"] = str(exc)
@@ -797,7 +823,7 @@ def fetch_treasury_financing(
     funding = {}
     for label, sid in FUNDING_LAYER_SERIES.items():
         try:
-            funding[label] = fetcher(sid, start="2012-01-01")
+            funding[label] = _get("funding", label)
         except Exception as exc:
             funding[label] = pd.Series(dtype=float, name=sid)
             errors[f"funding:{label}"] = str(exc)

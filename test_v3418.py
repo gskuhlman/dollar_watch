@@ -9,10 +9,10 @@ from dollar_dashboard.triggers import _auction_lifecycle, _next_auction
 
 
 def test_v3418_version_keeps_score_model_3417_lineage():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_upcoming_merge_prefers_richer_general_row_for_same_cusip_date():

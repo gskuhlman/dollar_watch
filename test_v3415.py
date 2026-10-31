@@ -5,10 +5,10 @@ from dollar_dashboard.run_history import APP_VERSION, SCHEMA_VERSION, SCORE_MODE
 
 
 def test_v3415_version_lineage_unchanged_score_model():
-    assert __version__ == "3.4.25"
-    assert APP_VERSION == "3.4.25"
+    assert __version__ == "3.4.27"
+    assert APP_VERSION == "3.4.27"
     assert SCHEMA_VERSION == "3.4.1"
-    assert SCORE_MODEL_VERSION == "3.4.3"
+    assert SCORE_MODEL_VERSION == "3.4.4"
 
 
 def test_llm_does_not_predict_repo_event_from_thin_buffer_alone():

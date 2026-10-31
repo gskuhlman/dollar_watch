@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -47,10 +49,7 @@ def _index_dict(df: pd.DataFrame) -> dict:
     return df.where(pd.notnull(df), None).to_dict(orient="index")
 
 
-def collect_live_bundle() -> dict[str, Any]:
-    status: dict[str, dict[str, Any]] = {}
-    bundle: dict[str, Any] = {}
-
+def _stage_market(bundle: dict, status: dict) -> None:
     try:
         market_hist, market_summary = fetch_market_history()
         bundle["market_hist"] = market_hist; bundle["market_summary"] = market_summary
@@ -62,6 +61,8 @@ def collect_live_bundle() -> dict[str, Any]:
         status["Market prices"] = {"ok": False, "weight": 1.3, "error": str(e)}
         status["Offshore FX forward proxy"] = {"ok": False, "weight": 0.35, "error": str(e)}
 
+
+def _stage_fred_tic(bundle: dict, status: dict) -> None:
     try:
         fred_hist, fred_summary = fetch_fred_bundle()
         bundle["fred_hist"] = fred_hist; bundle["fred_summary"] = fred_summary
@@ -71,6 +72,12 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["fred_hist"] = pd.DataFrame(); bundle["fred_summary"] = pd.DataFrame(); bundle["fed_treasury_classification"] = {"classification":"INSUFFICIENT_DATA","confidence":0.0}
         status["FRED rates / funding"] = {"ok": False, "weight": 1.5, "error": str(e)}
 
+    tic_bundle, tic_status = collect_tic_components_independent(bundle.get("fred_hist", pd.DataFrame()))
+    bundle.update(tic_bundle)
+    status.update(tic_status)
+
+
+def _stage_treasury_financing(bundle: dict, status: dict) -> None:
     try:
         tf_z1, tf_money, tf_funding, tf_meta = fetch_treasury_financing()
         bundle["treasury_financing_z1"] = tf_z1
@@ -88,6 +95,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["treasury_financing_meta"] = {"available":False,"classification":{"state":"UNKNOWN","score":None},"source_errors":{"collector":str(e)}}
         status["Treasury financing / Z.1"] = {"ok":False,"weight":1.15,"error":str(e),"notes":"Missing financing data is uncertainty, not benign private demand."}
 
+
+def _stage_auctions(bundle: dict, status: dict) -> None:
     try:
         auctions = fetch_treasury_auctions()
         auction_summary, auction_stress = summarize_auction_stress(auctions)
@@ -101,6 +110,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["auctions"] = pd.DataFrame(); bundle["auction_summary"] = pd.DataFrame(); bundle["auction_stress"] = 0.0
         status["Treasury auctions"] = {"ok": False, "weight": 1.2, "error": str(e), "notes": "Absence of auction data is NOT benign-auction evidence"}
 
+
+def _stage_upcoming_auctions(bundle: dict, status: dict) -> None:
     try:
         upcoming_raw = fetch_upcoming_treasury_auctions(days=35)
         upcoming = summarize_upcoming_auctions(upcoming_raw, days=35)
@@ -117,6 +128,7 @@ def collect_live_bundle() -> dict[str, Any]:
         status["Treasury upcoming auctions"] = {"ok": False, "weight": 0.35, "error": str(e), "notes": "Historical auction scoring can still operate if this calendar feed fails"}
 
 
+def _stage_buybacks(bundle: dict, status: dict) -> None:
     try:
         buybacks, buyback_source = fetch_buyback_schedule()
         buyback_meta = summarize_buybacks(buybacks, buyback_source)
@@ -145,6 +157,8 @@ def collect_live_bundle() -> dict[str, Any]:
         status["Treasury buyback schedule"] = {"ok": False, "weight": 0.45, "error": str(e), "notes": "Buyback schedule unavailable; missing evidence, not zero policy capacity"}
         status["Treasury buyback results"] = {"ok": False, "weight": 0.65, "error": str(e), "notes": "Buyback execution unavailable; missing evidence, not zero activity"}
 
+
+def _stage_cftc(bundle: dict, status: dict) -> None:
     try:
         cftc = fetch_cftc_tff()
         cftc_summary, cftc_pressure = summarize_cftc_fx(cftc)
@@ -158,10 +172,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["fx_positioning_squeeze"] = 0.0; bundle["fx_positioning_squeeze_reasons"] = []
         status["CFTC FX positioning"] = {"ok": False, "weight": 1.0, "error": str(e)}
 
-    tic_bundle, tic_status = collect_tic_components_independent(bundle.get("fred_hist", pd.DataFrame()))
-    bundle.update(tic_bundle)
-    status.update(tic_status)
 
+def _stage_cofer(bundle: dict, status: dict) -> None:
     try:
         cofer = fetch_imf_cofer_usd_share()
         cofer_meta, cofer_pressure = summarize_cofer(cofer)
@@ -172,6 +184,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["cofer"] = pd.DataFrame(); bundle["cofer_meta"] = {}; bundle["cofer_pressure"] = 0.0
         status["IMF COFER"] = {"ok": False, "weight": 1.0, "error": str(e), "notes": "Quarterly reserve-composition confirmation"}
 
+
+def _stage_fiscal(bundle: dict, status: dict) -> None:
     try:
         fiscal_raw, fiscal_meta, fiscal_stress = fetch_fiscal_pipeline()
         bundle["fiscal_raw"] = fiscal_raw; bundle["fiscal_meta"] = fiscal_meta; bundle["fiscal_stress"] = fiscal_stress
@@ -181,6 +195,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["fiscal_raw"] = pd.DataFrame(); bundle["fiscal_meta"] = {}; bundle["fiscal_stress"] = 0.0
         status["Treasury fiscal flows"] = {"ok": False, "weight": 1.1, "error": str(e)}
 
+
+def _stage_stablecoins(bundle: dict, status: dict) -> None:
     try:
         stable_assets, stable_hist = fetch_stablecoins()
         stable_focus, stable_meta, stable_support = summarize_stablecoins(stable_assets, stable_hist)
@@ -197,6 +213,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["stable_meta"] = {}; bundle["stable_support"] = 0.0
         status["Stablecoin supply"] = {"ok": False, "weight": 0.8, "error": str(e)}
 
+
+def _stage_news(bundle: dict, status: dict) -> None:
     try:
         news = fetch_news()
         bundle["news"] = news
@@ -206,6 +224,8 @@ def collect_live_bundle() -> dict[str, Any]:
         bundle["news"] = pd.DataFrame()
         status["News discovery"] = {"ok": False, "weight": 0.5, "error": str(e)}
 
+
+def _stage_official_policy(bundle: dict, status: dict) -> None:
     try:
         official_policy = collect_official_policy_bundle(timeout=12)
         bundle["official_policy"] = official_policy
@@ -224,6 +244,50 @@ def collect_live_bundle() -> dict[str, Any]:
     except Exception as e:
         bundle["official_policy"] = {"japan_fx_intervention":{"ok":False},"us_fx_intervention":{"ok":False},"canonical_statements":[]}
         status["Official FX / policy feeds"] = {"ok":False,"weight":0.8,"error":str(e),"notes":"Missing official-policy data is uncertainty, not benign evidence"}
+
+
+# Stages run concurrently; each writes only its own bundle/status keys into private dicts that are
+# merged afterwards in this fixed order, so Data Health rows and snapshot contents never depend on
+# thread timing. TIC stays inside the FRED stage because it reuses fred_hist.
+COLLECTION_STAGES = [
+    ("market", _stage_market),
+    ("fred_tic", _stage_fred_tic),
+    ("treasury_financing", _stage_treasury_financing),
+    ("auctions", _stage_auctions),
+    ("upcoming_auctions", _stage_upcoming_auctions),
+    ("buybacks", _stage_buybacks),
+    ("cftc", _stage_cftc),
+    ("cofer", _stage_cofer),
+    ("fiscal", _stage_fiscal),
+    ("stablecoins", _stage_stablecoins),
+    ("news", _stage_news),
+    ("official_policy", _stage_official_policy),
+]
+COLLECTION_WORKERS = 8
+
+
+def _run_stage(fn) -> tuple[dict, dict, float]:
+    bundle: dict[str, Any] = {}; status: dict[str, dict[str, Any]] = {}
+    t = time.perf_counter()
+    try:
+        fn(bundle, status)
+    except Exception as e:  # stages catch their own source errors; this guards programming errors
+        status[f"Collector stage {fn.__name__}"] = {"ok": False, "weight": 0.0, "error": f"{type(e).__name__}: {e}"}
+    return bundle, status, time.perf_counter() - t
+
+
+def collect_live_bundle() -> dict[str, Any]:
+    status: dict[str, dict[str, Any]] = {}
+    bundle: dict[str, Any] = {}
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=COLLECTION_WORKERS, thread_name_prefix="collect") as pool:
+        futures = [(name, pool.submit(_run_stage, fn)) for name, fn in COLLECTION_STAGES]
+        timings = {}
+        for name, fut in futures:
+            b, s, seconds = fut.result()
+            bundle.update(b); status.update(s); timings[name] = round(seconds, 2)
+    collection_timing = {"total_seconds": round(time.perf_counter() - started, 2), "stages": timings}
+    bundle["collection_timing"] = collection_timing
 
     health_df, confidence = build_data_health(status)
     bundle["health"] = health_df
@@ -303,6 +367,7 @@ def collect_live_bundle() -> dict[str, Any]:
         "source_confidence": source_confidence,
         "component_confidence": component_confidence,
         "data_health": _records(health_df),
+        "collection_timing": collection_timing,
     }
     bundle["snapshot"] = snapshot
     return bundle
